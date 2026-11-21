@@ -125,22 +125,29 @@ export function requirePlantRole(minRole: UserRole) {
         )
         .limit(1);
 
-      // Controlled single-admin bootstrap for initial deployment only:
-      // If a plant has ZERO assigned members yet (or matches BOOTSTRAP_ADMIN_EMAIL), grant ADMIN once.
+      // Controlled single-admin bootstrap:
+      // Production requires explicit BOOTSTRAP_ADMIN_EMAIL (or CLI/admin assignment).
+      // Non-production allows first-user bootstrap on default CENTRAL_PLANT_01 when empty.
       if (!membership) {
         const bootstrapEmail = (process.env.BOOTSTRAP_ADMIN_EMAIL ?? '').trim().toLowerCase();
         const callerEmail = (req.user?.email ?? '').trim().toLowerCase();
+        const matchesBootstrapEmail = Boolean(bootstrapEmail && callerEmail === bootstrapEmail);
 
-        const existingAnyRole = await db
-          .select({ id: userPlantRoles.id })
-          .from(userPlantRoles)
-          .where(eq(userPlantRoles.plantId, plant.id))
-          .limit(1);
-
+        let allowDevBootstrap = false;
         if (
-          (bootstrapEmail && callerEmail === bootstrapEmail) ||
-          existingAnyRole.length === 0
+          !matchesBootstrapEmail &&
+          process.env.NODE_ENV !== 'production' &&
+          plant.code === 'CENTRAL_PLANT_01'
         ) {
+          const existingAnyRole = await db
+            .select({ id: userPlantRoles.id })
+            .from(userPlantRoles)
+            .where(eq(userPlantRoles.plantId, plant.id))
+            .limit(1);
+          allowDevBootstrap = existingAnyRole.length === 0;
+        }
+
+        if (matchesBootstrapEmail || allowDevBootstrap) {
           const [created] = await db
             .insert(userPlantRoles)
             .values({

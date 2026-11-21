@@ -6,7 +6,7 @@ import { closePool } from './src/db/index.ts';
 import { logEvent } from './src/lib/logger.ts';
 import { createApp } from './src/server/app.ts';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

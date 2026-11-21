@@ -10,6 +10,21 @@ jobs:
   verify:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_postgres_password
+          POSTGRES_DB: chiller_plant_twin_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,13 +40,27 @@ jobs:
       - name: TypeScript type-check
         run: npm run lint
 
-      - name: Unit & API integration tests
+      - name: Drizzle migration & schema check
+        env:
+          SQL_HOST: 127.0.0.1
+          SQL_PORT: 5432
+          SQL_DB_NAME: chiller_plant_twin_ci
+          SQL_ADMIN_USER: postgres
+          SQL_ADMIN_PASSWORD: ci_postgres_password
+          SQL_SSL: "false"
+        run: |
+          npx drizzle-kit check --config=src/db/drizzle.config.ts
+          npm run db:migrate
+
+      - name: Unit, API & PostgreSQL transaction tests
+        env:
+          SQL_HOST: 127.0.0.1
+          SQL_PORT: 5432
+          SQL_DB_NAME: chiller_plant_twin_ci
+          SQL_USER: postgres
+          SQL_PASSWORD: ci_postgres_password
+          SQL_SSL: "false"
         run: npm test
 
       - name: Production frontend build
         run: npm run build
-
-      - name: Verify Drizzle migration snapshots exist
-        run: |
-          test -d drizzle/meta
-          ls -1 drizzle/*.sql

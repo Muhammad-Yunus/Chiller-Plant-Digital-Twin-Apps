@@ -14,7 +14,8 @@
     "db:generate": "drizzle-kit generate --config=src/db/drizzle.config.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",
-    "edge:create-credential": "tsx src/scripts/createEdgeCredential.ts"
+    "edge:create-credential": "tsx src/scripts/createEdgeCredential.ts",
+    "plant:assign-role": "tsx src/scripts/assignPlantRole.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

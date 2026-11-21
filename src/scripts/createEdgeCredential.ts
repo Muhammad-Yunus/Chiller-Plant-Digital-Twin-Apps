@@ -4,7 +4,7 @@ import { closePool, db } from '../db/index.ts';
 import { createOrRotateEdgeCredential } from '../db/plantRepository.ts';
 import { plants } from '../db/schema.ts';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 function getArg(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);

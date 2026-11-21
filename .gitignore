@@ -1,8 +1,25 @@
+# Dependencies & build artifacts
 node_modules/
-build/
 dist/
+build/
 coverage/
-.DS_Store
+*.tsbuildinfo
+
+# Logs & OS files
 *.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Environment files & secrets (keep .env.example committed)
+.env
+.env.local
+.env.*.local
 .env*
 !.env.example
+
+# Keys & service account files
+*.pem
+*.key
+service-account*.json
+*-firebase-adminsdk-*.json

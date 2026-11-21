@@ -918,7 +918,8 @@ export function App() {
   };
 
   const isLiveBlocked =
-    dataMode === 'live' && (!currentUser || Boolean(snapshotError) || !hasLiveHydrated);
+    dataMode === 'live' &&
+    (!currentUser || Boolean(snapshotError) || !hasLiveHydrated || freshnessStatus === 'OFFLINE');
   const canOperateAlarms =
     dataMode === 'simulated' || plantRole === 'OPERATOR' || plantRole === 'ADMIN';
 

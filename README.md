@@ -201,6 +201,9 @@ npm test
 # Production build & start
 npm run build
 NODE_ENV=production npm start
+
+# Assign operator RBAC role via CLI (after operator signs in once)
+npm run plant:assign-role -- --plant CENTRAL_PLANT_01 --email operator@example.com --role OPERATOR
 ```
 
 ---
@@ -209,8 +212,10 @@ NODE_ENV=production npm start
 
 ```text
 .
-├── .github/workflows/ci.yml          # CI: lint, vitest, build, migration check
+├── .github/workflows/ci.yml          # CI: lint, drizzle-kit check, Postgres migrate, vitest, build
 ├── Dockerfile                        # Non-root Node 22 multi-stage Cloud Run image
+├── deploy/
+│   └── cloudrun.service.yaml         # Declarative Cloud Run service manifest (maxScale=1, probes, Secret refs)
 ├── docs/
 │   ├── dashboard-preview.png         # Dashboard HUD preview screenshot
 │   └── openapi.json                  # OpenAPI 3.1 API specification
@@ -234,7 +239,9 @@ NODE_ENV=production npm start
     │   ├── auth.ts                   # Separated operator RBAC & edge gateway authentication
     │   └── security.ts               # Request ID, security headers, restricted CORS, rate limiter
     ├── scene/ChillerPlantScene.ts    # Procedural Three.js 3D plant scene
-    ├── scripts/createEdgeCredential.ts # CLI to issue/rotate edge gateway credentials
+    ├── scripts/
+    │   ├── assignPlantRole.ts        # CLI to assign per-plant VIEWER/OPERATOR/ADMIN roles
+    │   └── createEdgeCredential.ts   # CLI to issue/rotate edge gateway credentials
     ├── server/app.ts                 # Testable Express application factory
     └── validation/telemetrySchemas.ts # Strict Zod contracts
 ```

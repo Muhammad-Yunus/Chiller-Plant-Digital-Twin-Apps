@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import { closePool } from './index.ts';
 import { seedPlantDevelopment } from './plantRepository.ts';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 async function main() {
   const plantCode = process.argv[2] || 'CENTRAL_PLANT_01';

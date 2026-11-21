@@ -5,7 +5,7 @@ import path from 'path';
 import { Pool } from 'pg';
 import { fileURLToPath } from 'url';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
