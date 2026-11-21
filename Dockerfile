@@ -1,12 +1,21 @@
-# Multi-stage production container for Chiller Plant Twin (Node 22 + Cloud Run)
-FROM node:22-alpine AS builder
+# Multi-stage production container for Chiller Plant Twin
+# Uses Bun (matching committed bun.lock) for reproducible installs & Vite build,
+# and minimal non-root Node 22 runtime executing `node server.ts`.
+
+FROM oven/bun:1-alpine AS builder
 WORKDIR /app
 
-COPY package.json package-lock.json* bun.lock* ./
-RUN npm ci
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY . .
-RUN npm run lint && npm run build
+RUN bun run lint && bun run build
+
+FROM oven/bun:1-alpine AS prod-deps
+WORKDIR /app
+
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
 
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -15,8 +24,8 @@ ENV PORT=3000
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=prod-deps /app/package.json ./package.json
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.ts ./server.ts
 COPY --from=builder /app/src ./src

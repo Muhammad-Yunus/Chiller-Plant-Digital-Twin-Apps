@@ -66,6 +66,17 @@ export const credentialStatusEnum = pgEnum('credential_status', [
   'REVOKED',
 ]);
 
+export const credentialTypeEnum = pgEnum('credential_type', [
+  'EDGE',
+  'SIMULATION',
+]);
+
+export const dataSourceEnum = pgEnum('data_source', [
+  'EDGE',
+  'SIMULATION',
+  'SEED',
+]);
+
 // Authenticated operator/user table linked to Firebase Auth UID
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -116,6 +127,7 @@ export const edgeCredentials = pgTable(
     secretHash: text('secret_hash').notNull(),
     secretSalt: text('secret_salt').notNull(),
     status: credentialStatusEnum('status').default('ACTIVE').notNull(),
+    credentialType: credentialTypeEnum('credential_type').default('EDGE').notNull(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
     rotatedAt: timestamp('rotated_at', { withTimezone: true }),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
@@ -171,6 +183,8 @@ export const deviceCurrentStates = pgTable(
     lastSequenceNumber: integer('last_sequence_number').default(0).notNull(),
     edgeDeviceId: varchar('edge_device_id', { length: 64 }),
     payloadVersion: varchar('payload_version', { length: 24 }),
+    isSimulated: boolean('is_simulated').default(false).notNull(),
+    sourceType: dataSourceEnum('source_type').default('EDGE').notNull(),
   },
   (table) => [
     index('idx_device_current_plant_ts').on(table.plantId, table.sourceTimestamp),
@@ -192,6 +206,8 @@ export const telemetryBatches = pgTable(
     sourceTimestamp: timestamp('source_timestamp', { withTimezone: true }).notNull(),
     receivedAt: timestamp('received_at', { withTimezone: true }).defaultNow().notNull(),
     sampleCount: integer('sample_count').notNull(),
+    payloadHash: varchar('payload_hash', { length: 64 }),
+    sourceType: dataSourceEnum('source_type').default('EDGE').notNull(),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>().default({}).notNull(),
   },
   (table) => [
@@ -223,6 +239,8 @@ export const deviceTelemetrySamples = pgTable(
     edgeDeviceId: varchar('edge_device_id', { length: 64 }),
     payloadVersion: varchar('payload_version', { length: 24 }),
     idempotencyKey: varchar('idempotency_key', { length: 128 }),
+    isSimulated: boolean('is_simulated').default(false).notNull(),
+    sourceType: dataSourceEnum('source_type').default('EDGE').notNull(),
     status: deviceStatusEnum('status').notNull(),
     loadPct: real('load_pct').notNull(),
     powerKw: real('power_kw'),
@@ -262,6 +280,7 @@ export const plantKpiSnapshots = pgTable(
     payloadVersion: varchar('payload_version', { length: 24 }),
     idempotencyKey: varchar('idempotency_key', { length: 128 }),
     isSimulated: boolean('is_simulated').default(false).notNull(),
+    sourceType: dataSourceEnum('source_type').default('EDGE').notNull(),
     scenario: varchar('scenario', { length: 32 }).default('Steady State').notNull(),
     coolingLoadMw: real('cooling_load_mw').notNull(),
     totalPowerMw: real('total_power_mw').notNull(),

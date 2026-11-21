@@ -1,5 +1,5 @@
-# Declarative Cloud Run Service Manifest (Knative v1)
-# Replace PROJECT_ID, REGION, INSTANCE_NAME, and IMAGE_TAG before applying:
+# Declarative Cloud Run Service Manifest (Knative v1) — Supabase PostgreSQL Backend
+# Replace PROJECT_ID and IMAGE_TAG before applying:
 #   gcloud run services replace deploy/cloudrun.service.yaml --region=asia-southeast1
 apiVersion: serving.knative.dev/v1
 kind: Service
@@ -11,10 +11,10 @@ spec:
   template:
     metadata:
       annotations:
-        # Single instance required while PlantRealtimeBus SSE uses in-memory EventEmitter
+        # Pilot boundary: single instance required while PlantRealtimeBus SSE uses in-memory EventEmitter.
+        # Remove maxScale="1" only after backing PlantRealtimeBus with Supabase Realtime / Postgres LISTEN-NOTIFY / Redis Pub-Sub.
         autoscaling.knative.dev/minScale: "0"
         autoscaling.knative.dev/maxScale: "1"
-        run.googleapis.com/cloudsql-instances: PROJECT_ID:asia-southeast1:INSTANCE_NAME
         run.googleapis.com/execution-environment: gen2
     spec:
       containerConcurrency: 80
@@ -34,20 +34,23 @@ spec:
               value: production
             - name: APP_URL
               value: https://chiller-plant-twin.example.com
-            - name: SQL_HOST
-              value: /cloudsql/PROJECT_ID:asia-southeast1:INSTANCE_NAME
-            - name: SQL_DB_NAME
-              value: chiller_plant_twin
-            - name: SQL_USER
-              value: app_user
             - name: SQL_SSL
-              value: "false"
+              value: "true"
+            - name: SQL_SSL_REJECT_UNAUTHORIZED
+              value: "true"
+            - name: SQL_POOL_MAX
+              value: "10"
             - name: TELEMETRY_STALE_AFTER_SEC
               value: "15"
-            - name: SQL_PASSWORD
+            - name: SUPABASE_DB_URL
               valueFrom:
                 secretKeyRef:
-                  name: chiller-sql-app-password
+                  name: chiller-supabase-db-url
+                  key: latest
+            - name: SQL_SSL_CA
+              valueFrom:
+                secretKeyRef:
+                  name: chiller-supabase-root-ca
                   key: latest
             - name: BOOTSTRAP_ADMIN_EMAIL
               valueFrom:

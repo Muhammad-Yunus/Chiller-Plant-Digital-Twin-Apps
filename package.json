@@ -15,6 +15,7 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",
     "edge:create-credential": "tsx src/scripts/createEdgeCredential.ts",
+    "edge:simulator": "tsx src/scripts/edgeSimulator.ts",
     "plant:assign-role": "tsx src/scripts/assignPlantRole.ts"
   },
   "dependencies": {

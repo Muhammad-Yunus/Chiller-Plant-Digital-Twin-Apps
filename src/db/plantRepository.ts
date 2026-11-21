@@ -11,9 +11,11 @@ import { realtimeBus } from '../lib/realtimeBus.ts';
 import type {
   AlarmEntry,
   DataQuality,
+  DataSourceType,
   DeviceCategory,
   DeviceGroup,
   DeviceParameterRow,
+  EdgeCredentialType,
   PlantDevice,
   PlantKpis,
   PlantSnapshotResponse,
@@ -118,6 +120,38 @@ export function isNewerReading(
   return incomingSeq > (currentSeq ?? -1);
 }
 
+function canonicalizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeValue);
+  }
+  if (value !== null && typeof value === 'object') {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const entry = (value as Record<string, unknown>)[key];
+      if (entry !== undefined) {
+        sorted[key] = canonicalizeValue(entry);
+      }
+    }
+    return sorted;
+  }
+  return value;
+}
+
+export function computePayloadHash(payload: TelemetryIngestPayload): string {
+  const canonical = JSON.stringify(canonicalizeValue(payload));
+  return crypto.createHash('sha256').update(canonical).digest('hex');
+}
+
+function isPgUniqueViolation(error: unknown): boolean {
+  let current: unknown = error;
+  while (current && typeof current === 'object') {
+    const pgErr = current as { code?: string; constraint?: string; cause?: unknown };
+    if (pgErr.code === '23505') return true;
+    current = pgErr.cause;
+  }
+  return false;
+}
+
 export async function seedPlantDevelopment(plantCode = 'CENTRAL_PLANT_01') {
   try {
     await db
@@ -189,6 +223,8 @@ export async function seedPlantDevelopment(plantCode = 'CENTRAL_PLANT_01') {
               lastSequenceNumber: 0,
               edgeDeviceId: 'seed-init',
               payloadVersion: '1.0.0',
+              isSimulated: true,
+              sourceType: 'SEED',
             })
             .onConflictDoNothing({ target: deviceCurrentStates.deviceId });
         }
@@ -203,7 +239,8 @@ export async function seedPlantDevelopment(plantCode = 'CENTRAL_PLANT_01') {
         sequenceNumber: 0,
         edgeDeviceId: 'seed-init',
         payloadVersion: '1.0.0',
-        isSimulated: false,
+        isSimulated: true,
+        sourceType: 'SEED',
         scenario: 'Steady State',
         coolingLoadMw: INITIAL_KPIS.coolingLoadMw,
         totalPowerMw: INITIAL_KPIS.totalPowerMw,
@@ -234,6 +271,8 @@ export async function seedPlantDevelopment(plantCode = 'CENTRAL_PLANT_01') {
             sequenceNumber: idx,
             edgeDeviceId: 'seed-init',
             payloadVersion: '1.0.0',
+            isSimulated: true,
+            sourceType: 'SEED' as const,
             status: 'RUNNING' as const,
             loadPct: pt.loadPct,
             cop: pt.cop,
@@ -250,7 +289,7 @@ export async function seedPlantDevelopment(plantCode = 'CENTRAL_PLANT_01') {
           plantId: plant.id,
           severity: alm.severity,
           state: 'ACTIVE' as const,
-          sourceType: 'SYSTEM' as const,
+          sourceType: 'SIMULATION' as const,
           dedupeKey: `seed-alarm-${i + 1}`,
           message: alm.message,
           source: alm.source,
@@ -295,7 +334,10 @@ export async function getPlantSnapshot(
         .select()
         .from(plantKpiSnapshots)
         .where(eq(plantKpiSnapshots.plantId, plantId))
-        .orderBy(desc(plantKpiSnapshots.sourceTimestamp))
+        .orderBy(
+          desc(plantKpiSnapshots.sourceTimestamp),
+          desc(plantKpiSnapshots.sequenceNumber),
+        )
         .limit(1),
       db
         .select()
@@ -364,6 +406,8 @@ export async function getPlantSnapshot(
         sourceTimestamp: state?.sourceTimestamp?.toISOString(),
         receivedAt: state?.receivedAt?.toISOString(),
         lastSequenceNumber: state?.lastSequenceNumber,
+        isSimulated: state?.isSimulated ?? false,
+        sourceType: (state?.sourceType ?? 'EDGE') as DataSourceType,
         liveParams,
         designParams,
       };
@@ -443,6 +487,8 @@ export async function getPlantSnapshot(
         observedAt: latestKpi?.sourceTimestamp?.toISOString() ?? null,
         receivedAt: latestKpi?.receivedAt?.toISOString() ?? null,
         quality: (latestKpi?.quality ?? 'STALE') as DataQuality,
+        isSimulated: latestKpi?.isSimulated ?? false,
+        sourceType: (latestKpi?.sourceType ?? 'EDGE') as DataSourceType,
         staleAfterSec: STALE_AFTER_SEC,
       },
       kpis,
@@ -672,190 +718,231 @@ export async function ingestTelemetryBatch(
   plantId: number,
   idempotencyKey: string,
   payload: TelemetryIngestPayload,
+  options?: { sourceType?: EdgeCredentialType },
 ) {
   const receivedAt = new Date();
   const sourceTimestamp = new Date(payload.observedAt);
+  const sourceType: EdgeCredentialType = options?.sourceType ?? 'EDGE';
+  const isSimulated = sourceType === 'SIMULATION';
+  const payloadHash = computePayloadHash(payload);
+
+  const resolveExistingBatch = (existingBatch: {
+    id: number;
+    receivedAt: Date;
+    payloadHash: string | null;
+    sourceType: DataSourceType;
+  }) => {
+    if (existingBatch.payloadHash && existingBatch.payloadHash !== payloadHash) {
+      throw new DomainError(
+        409,
+        'IDEMPOTENCY_CONFLICT',
+        'Idempotency-Key already used with a different telemetry payload',
+      );
+    }
+    return {
+      deduplicated: true,
+      batchId: existingBatch.id,
+      receivedAt: existingBatch.receivedAt.toISOString(),
+      observedAt: sourceTimestamp.toISOString(),
+      ingestedDevices: 0,
+      isSimulated: existingBatch.sourceType === 'SIMULATION',
+      sourceType: existingBatch.sourceType,
+    };
+  };
 
   try {
-    const result = await db.transaction(async (tx) => {
-      // 1. Idempotency check (retry-safe duplicate handling)
-      const [existingBatch] = await tx
-        .select({ id: telemetryBatches.id, receivedAt: telemetryBatches.receivedAt })
-        .from(telemetryBatches)
-        .where(
-          and(
-            eq(telemetryBatches.plantId, plantId),
-            eq(telemetryBatches.edgeDeviceId, payload.edgeDeviceId),
-            eq(telemetryBatches.idempotencyKey, idempotencyKey),
-          ),
-        )
-        .limit(1);
-
-      if (existingBatch) {
-        return {
-          deduplicated: true,
-          batchId: existingBatch.id,
-          receivedAt: existingBatch.receivedAt.toISOString(),
-          observedAt: sourceTimestamp.toISOString(),
-          ingestedDevices: 0,
-        };
-      }
-
-      // 2. Verify all referenced device IDs belong strictly to authorized plantId
-      const plantDeviceRows = await tx
-        .select({ id: plantDevices.id, deviceKey: plantDevices.deviceKey })
-        .from(plantDevices)
-        .where(eq(plantDevices.plantId, plantId));
-
-      const validDeviceIds = new Set(plantDeviceRows.map((d) => d.id));
-      const keyToIdMap = new Map(plantDeviceRows.map((d) => [d.deviceKey, d.id]));
-
-      // Resolve deviceKey or exact plant device ID
-      const resolvedDevices = payload.devices.map((item) => {
-        const resolvedId = validDeviceIds.has(item.id)
-          ? item.id
-          : keyToIdMap.get(item.id);
-        if (!resolvedId) {
-          throw new DomainError(
-            400,
-            'UNKNOWN_DEVICE_FOR_PLANT',
-            `Device ${item.id} does not belong to plant ${payload.plantCode}`,
-          );
-        }
-        return { ...item, resolvedId };
-      });
-
-      // 3. Record provenance batch ledger
-      const [insertedBatch] = await tx
-        .insert(telemetryBatches)
-        .values({
-          plantId,
-          edgeDeviceId: payload.edgeDeviceId,
-          idempotencyKey,
-          sequenceNumber: payload.sequenceNumber,
-          payloadVersion: payload.payloadVersion,
-          sourceTimestamp,
-          receivedAt,
-          sampleCount: resolvedDevices.length,
-          rawPayload: payload as unknown as Record<string, unknown>,
-        })
-        .returning({ id: telemetryBatches.id });
-
-      // 4. Out-of-order check for plant-wide KPI snapshot vs latest stored KPI
-      const [latestKpi] = await tx
-        .select({
-          sourceTimestamp: plantKpiSnapshots.sourceTimestamp,
-          sequenceNumber: plantKpiSnapshots.sequenceNumber,
-        })
-        .from(plantKpiSnapshots)
-        .where(eq(plantKpiSnapshots.plantId, plantId))
-        .orderBy(desc(plantKpiSnapshots.sourceTimestamp))
-        .limit(1);
-
-      const kpiIsNewer = isNewerReading(
-        sourceTimestamp,
-        payload.sequenceNumber,
-        latestKpi?.sourceTimestamp,
-        latestKpi?.sequenceNumber,
-      );
-
-      await tx.insert(plantKpiSnapshots).values({
-        plantId,
-        sourceTimestamp,
-        receivedAt,
-        recordedAt: sourceTimestamp,
-        quality: payload.quality,
-        sequenceNumber: payload.sequenceNumber,
-        edgeDeviceId: payload.edgeDeviceId,
-        payloadVersion: payload.payloadVersion,
-        idempotencyKey,
-        isSimulated: false,
-        scenario: payload.scenario,
-        coolingLoadMw: payload.kpis.coolingLoadMw,
-        totalPowerMw: payload.kpis.totalPowerMw,
-        systemCop: payload.kpis.systemCop,
-        wetBulbC: payload.kpis.wetBulbC,
-        chwSupplyC: payload.kpis.chwSupplyC,
-        chwReturnC: payload.kpis.chwReturnC,
-        deltaTK: payload.kpis.deltaTK,
-        cwSupplyC: payload.kpis.cwSupplyC,
-        towerApproachK: payload.kpis.towerApproachK,
-        chillersOn: payload.kpis.chillersOn,
-      });
-
-      // 5. Persist samples for ALL devices and conditionally update current state only if newer
-      const currentRows = await tx
-        .select()
-        .from(deviceCurrentStates)
-        .where(eq(deviceCurrentStates.plantId, plantId));
-      const currentStateMap = new Map(currentRows.map((c) => [c.deviceId, c]));
-
-      const sampleInserts = [];
-      const liveBroadcastUpdates: Array<{
+    let result: {
+      deduplicated: boolean;
+      batchId: number;
+      receivedAt: string;
+      observedAt: string;
+      ingestedDevices: number;
+      isSimulated: boolean;
+      sourceType: DataSourceType;
+      kpiIsNewer?: boolean;
+      liveBroadcastUpdates?: Array<{
         id: string;
         status: 'RUNNING' | 'STANDBY' | 'ISOLATED';
         quality: DataQuality;
         loadPct: number;
         sourceTimestamp: string;
         metrics: Record<string, number | string>;
-      }> = [];
+      }>;
+      emittedAlarms?: AlarmEntry[];
+    };
 
-      for (const dev of resolvedDevices) {
-        const devTs = dev.observedAt ? new Date(dev.observedAt) : sourceTimestamp;
-        const existingState = currentStateMap.get(dev.resolvedId);
+    try {
+      result = await db.transaction(async (tx) => {
+        // 1. Idempotency check (retry-safe duplicate & mismatch detection)
+        const [existingBatch] = await tx
+          .select({
+            id: telemetryBatches.id,
+            receivedAt: telemetryBatches.receivedAt,
+            payloadHash: telemetryBatches.payloadHash,
+            sourceType: telemetryBatches.sourceType,
+          })
+          .from(telemetryBatches)
+          .where(
+            and(
+              eq(telemetryBatches.plantId, plantId),
+              eq(telemetryBatches.edgeDeviceId, payload.edgeDeviceId),
+              eq(telemetryBatches.idempotencyKey, idempotencyKey),
+            ),
+          )
+          .limit(1);
 
-        sampleInserts.push({
+        if (existingBatch) {
+          return resolveExistingBatch(existingBatch);
+        }
+
+        // 2. Verify all referenced device IDs belong strictly to authorized plantId
+        const plantDeviceRows = await tx
+          .select({ id: plantDevices.id, deviceKey: plantDevices.deviceKey })
+          .from(plantDevices)
+          .where(eq(plantDevices.plantId, plantId));
+
+        const validDeviceIds = new Set(plantDeviceRows.map((d) => d.id));
+        const keyToIdMap = new Map(plantDeviceRows.map((d) => [d.deviceKey, d.id]));
+
+        // Resolve deviceKey or exact plant device ID
+        const resolvedDevices = payload.devices.map((item) => {
+          const resolvedId = validDeviceIds.has(item.id)
+            ? item.id
+            : keyToIdMap.get(item.id);
+          if (!resolvedId) {
+            throw new DomainError(
+              400,
+              'UNKNOWN_DEVICE_FOR_PLANT',
+              `Device ${item.id} does not belong to plant ${payload.plantCode}`,
+            );
+          }
+          return { ...item, resolvedId };
+        });
+
+        // 3. Record provenance batch ledger (protected by uq_telemetry_batches_idem)
+        const [insertedBatch] = await tx
+          .insert(telemetryBatches)
+          .values({
+            plantId,
+            edgeDeviceId: payload.edgeDeviceId,
+            idempotencyKey,
+            sequenceNumber: payload.sequenceNumber,
+            payloadVersion: payload.payloadVersion,
+            sourceTimestamp,
+            receivedAt,
+            sampleCount: resolvedDevices.length,
+            payloadHash,
+            sourceType,
+            rawPayload: payload as unknown as Record<string, unknown>,
+          })
+          .returning({ id: telemetryBatches.id });
+
+        // 4. Out-of-order check for plant-wide KPI snapshot vs latest stored KPI
+        const [latestKpi] = await tx
+          .select({
+            sourceTimestamp: plantKpiSnapshots.sourceTimestamp,
+            sequenceNumber: plantKpiSnapshots.sequenceNumber,
+          })
+          .from(plantKpiSnapshots)
+          .where(eq(plantKpiSnapshots.plantId, plantId))
+          .orderBy(
+            desc(plantKpiSnapshots.sourceTimestamp),
+            desc(plantKpiSnapshots.sequenceNumber),
+          )
+          .limit(1);
+
+        const kpiIsNewer = isNewerReading(
+          sourceTimestamp,
+          payload.sequenceNumber,
+          latestKpi?.sourceTimestamp,
+          latestKpi?.sequenceNumber,
+        );
+
+        await tx.insert(plantKpiSnapshots).values({
           plantId,
-          deviceId: dev.resolvedId,
-          sourceTimestamp: devTs,
+          sourceTimestamp,
           receivedAt,
-          recordedAt: devTs,
-          quality: dev.quality,
+          recordedAt: sourceTimestamp,
+          quality: payload.quality,
           sequenceNumber: payload.sequenceNumber,
           edgeDeviceId: payload.edgeDeviceId,
           payloadVersion: payload.payloadVersion,
           idempotencyKey,
-          status: dev.status,
-          loadPct: dev.loadPct,
-          powerKw: extractNumericMetric(dev.metrics, ['Power', 'Fan Power', 'powerKw']),
-          capacityKw: extractNumericMetric(dev.metrics, ['Capacity', 'Heat Reject', 'capacityKw']),
-          cop: extractNumericMetric(dev.metrics, ['COP', 'cop']),
-          chwOutC: extractNumericMetric(dev.metrics, ['CHW Out', 'chwOutC']),
-          chwInC: extractNumericMetric(dev.metrics, ['CHW In', 'chwInC']),
-          cwInC: extractNumericMetric(dev.metrics, ['CW In', 'cwInC']),
-          cwOutC: extractNumericMetric(dev.metrics, ['CW Out', 'cwOutC']),
-          flowM3h: extractNumericMetric(dev.metrics, ['Flow Rate', 'Flow Thru', 'flowM3h']),
-          extraMetrics: dev.metrics,
+          isSimulated,
+          sourceType,
+          scenario: payload.scenario,
+          coolingLoadMw: payload.kpis.coolingLoadMw,
+          totalPowerMw: payload.kpis.totalPowerMw,
+          systemCop: payload.kpis.systemCop,
+          wetBulbC: payload.kpis.wetBulbC,
+          chwSupplyC: payload.kpis.chwSupplyC,
+          chwReturnC: payload.kpis.chwReturnC,
+          deltaTK: payload.kpis.deltaTK,
+          cwSupplyC: payload.kpis.cwSupplyC,
+          towerApproachK: payload.kpis.towerApproachK,
+          chillersOn: payload.kpis.chillersOn,
         });
 
-        if (
-          isNewerReading(
-            devTs,
-            payload.sequenceNumber,
-            existingState?.sourceTimestamp,
-            existingState?.lastSequenceNumber,
-          )
-        ) {
-          await tx
-            .insert(deviceCurrentStates)
-            .values({
-              deviceId: dev.resolvedId,
-              plantId,
-              status: dev.status,
-              quality: dev.quality,
-              loadPct: dev.loadPct,
-              runHours: dev.runHours ?? existingState?.runHours ?? 0,
-              liveMetrics: dev.metrics,
-              sourceTimestamp: devTs,
-              receivedAt,
-              recordedAt: devTs,
-              lastSequenceNumber: payload.sequenceNumber,
-              edgeDeviceId: payload.edgeDeviceId,
-              payloadVersion: payload.payloadVersion,
-            })
-            .onConflictDoUpdate({
-              target: deviceCurrentStates.deviceId,
-              set: {
+        // 5. Persist samples for ALL devices and conditionally update current state only if newer
+        const currentRows = await tx
+          .select()
+          .from(deviceCurrentStates)
+          .where(eq(deviceCurrentStates.plantId, plantId));
+        const currentStateMap = new Map(currentRows.map((c) => [c.deviceId, c]));
+
+        const sampleInserts = [];
+        const liveBroadcastUpdates: Array<{
+          id: string;
+          status: 'RUNNING' | 'STANDBY' | 'ISOLATED';
+          quality: DataQuality;
+          loadPct: number;
+          sourceTimestamp: string;
+          metrics: Record<string, number | string>;
+        }> = [];
+
+        for (const dev of resolvedDevices) {
+          const devTs = dev.observedAt ? new Date(dev.observedAt) : sourceTimestamp;
+          const existingState = currentStateMap.get(dev.resolvedId);
+
+          sampleInserts.push({
+            plantId,
+            deviceId: dev.resolvedId,
+            sourceTimestamp: devTs,
+            receivedAt,
+            recordedAt: devTs,
+            quality: dev.quality,
+            sequenceNumber: payload.sequenceNumber,
+            edgeDeviceId: payload.edgeDeviceId,
+            payloadVersion: payload.payloadVersion,
+            idempotencyKey,
+            isSimulated,
+            sourceType,
+            status: dev.status,
+            loadPct: dev.loadPct,
+            powerKw: extractNumericMetric(dev.metrics, ['Power', 'Fan Power', 'powerKw']),
+            capacityKw: extractNumericMetric(dev.metrics, ['Capacity', 'Heat Reject', 'capacityKw']),
+            cop: extractNumericMetric(dev.metrics, ['COP', 'cop']),
+            chwOutC: extractNumericMetric(dev.metrics, ['CHW Out', 'chwOutC']),
+            chwInC: extractNumericMetric(dev.metrics, ['CHW In', 'chwInC']),
+            cwInC: extractNumericMetric(dev.metrics, ['CW In', 'cwInC']),
+            cwOutC: extractNumericMetric(dev.metrics, ['CW Out', 'cwOutC']),
+            flowM3h: extractNumericMetric(dev.metrics, ['Flow Rate', 'Flow Thru', 'flowM3h']),
+            extraMetrics: dev.metrics,
+          });
+
+          if (
+            isNewerReading(
+              devTs,
+              payload.sequenceNumber,
+              existingState?.sourceTimestamp,
+              existingState?.lastSequenceNumber,
+            )
+          ) {
+            await tx
+              .insert(deviceCurrentStates)
+              .values({
+                deviceId: dev.resolvedId,
+                plantId,
                 status: dev.status,
                 quality: dev.quality,
                 loadPct: dev.loadPct,
@@ -867,114 +954,165 @@ export async function ingestTelemetryBatch(
                 lastSequenceNumber: payload.sequenceNumber,
                 edgeDeviceId: payload.edgeDeviceId,
                 payloadVersion: payload.payloadVersion,
-              },
+                isSimulated,
+                sourceType,
+              })
+              .onConflictDoUpdate({
+                target: deviceCurrentStates.deviceId,
+                set: {
+                  status: dev.status,
+                  quality: dev.quality,
+                  loadPct: dev.loadPct,
+                  runHours: dev.runHours ?? existingState?.runHours ?? 0,
+                  liveMetrics: dev.metrics,
+                  sourceTimestamp: devTs,
+                  receivedAt,
+                  recordedAt: devTs,
+                  lastSequenceNumber: payload.sequenceNumber,
+                  edgeDeviceId: payload.edgeDeviceId,
+                  payloadVersion: payload.payloadVersion,
+                  isSimulated,
+                  sourceType,
+                },
+              });
+
+            liveBroadcastUpdates.push({
+              id: dev.resolvedId,
+              status: dev.status,
+              quality: dev.quality,
+              loadPct: dev.loadPct,
+              sourceTimestamp: devTs.toISOString(),
+              metrics: dev.metrics,
             });
-
-          liveBroadcastUpdates.push({
-            id: dev.resolvedId,
-            status: dev.status,
-            quality: dev.quality,
-            loadPct: dev.loadPct,
-            sourceTimestamp: devTs.toISOString(),
-            metrics: dev.metrics,
-          });
+          }
         }
-      }
 
-      if (sampleInserts.length > 0) {
-        await tx.insert(deviceTelemetrySamples).values(sampleInserts);
-      }
-
-      // 6. Deduplicated Edge Alarm Ingestion
-      const emittedAlarms: AlarmEntry[] = [];
-      for (const alm of payload.alarms ?? []) {
-        const resolvedAlarmDevId = alm.deviceId
-          ? validDeviceIds.has(alm.deviceId)
-            ? alm.deviceId
-            : keyToIdMap.get(alm.deviceId) ?? null
-          : null;
-        const dedupeKey =
-          alm.dedupeKey ??
-          `${alm.severity}:${resolvedAlarmDevId ?? 'plant'}:${alm.message.slice(0, 64)}`;
-
-        const [existingActive] = await tx
-          .select()
-          .from(plantAlarms)
-          .where(
-            and(
-              eq(plantAlarms.plantId, plantId),
-              eq(plantAlarms.dedupeKey, dedupeKey),
-              eq(plantAlarms.state, 'ACTIVE'),
-            ),
-          )
-          .limit(1);
-
-        if (existingActive) {
-          const [updatedAlarm] = await tx
-            .update(plantAlarms)
-            .set({
-              lastOccurredAt: sourceTimestamp,
-              occurrenceCount: existingActive.occurrenceCount + 1,
-            })
-            .where(eq(plantAlarms.id, existingActive.id))
-            .returning();
-
-          emittedAlarms.push({
-            id: `alm-${updatedAlarm.id}`,
-            numericId: updatedAlarm.id,
-            timestamp: formatTimeHHMMSS(updatedAlarm.lastOccurredAt),
-            occurredAt: updatedAlarm.lastOccurredAt.toISOString(),
-            severity: updatedAlarm.severity,
-            state: updatedAlarm.state,
-            sourceType: updatedAlarm.sourceType,
-            occurrenceCount: updatedAlarm.occurrenceCount,
-            message: updatedAlarm.message,
-            source: updatedAlarm.source,
-          });
-        } else {
-          const [createdAlarm] = await tx
-            .insert(plantAlarms)
-            .values({
-              plantId,
-              deviceId: resolvedAlarmDevId,
-              occurredAt: sourceTimestamp,
-              lastOccurredAt: sourceTimestamp,
-              severity: alm.severity,
-              state: 'ACTIVE',
-              sourceType: 'EDGE',
-              dedupeKey,
-              occurrenceCount: 1,
-              message: alm.message,
-              source: alm.source,
-            })
-            .returning();
-
-          emittedAlarms.push({
-            id: `alm-${createdAlarm.id}`,
-            numericId: createdAlarm.id,
-            timestamp: formatTimeHHMMSS(createdAlarm.lastOccurredAt),
-            occurredAt: createdAlarm.lastOccurredAt.toISOString(),
-            severity: createdAlarm.severity,
-            state: createdAlarm.state,
-            sourceType: createdAlarm.sourceType,
-            occurrenceCount: createdAlarm.occurrenceCount,
-            message: createdAlarm.message,
-            source: createdAlarm.source,
-          });
+        if (sampleInserts.length > 0) {
+          await tx.insert(deviceTelemetrySamples).values(sampleInserts);
         }
-      }
 
-      return {
-        deduplicated: false,
-        batchId: insertedBatch.id,
-        receivedAt: receivedAt.toISOString(),
-        observedAt: sourceTimestamp.toISOString(),
-        ingestedDevices: resolvedDevices.length,
-        kpiIsNewer,
-        liveBroadcastUpdates,
-        emittedAlarms,
-      };
-    });
+        // 6. Deduplicated Edge Alarm Ingestion (stamped with credential provenance)
+        const emittedAlarms: AlarmEntry[] = [];
+        const alarmSourceType = isSimulated ? ('SIMULATION' as const) : ('EDGE' as const);
+
+        for (const alm of payload.alarms ?? []) {
+          const resolvedAlarmDevId = alm.deviceId
+            ? validDeviceIds.has(alm.deviceId)
+              ? alm.deviceId
+              : keyToIdMap.get(alm.deviceId) ?? null
+            : null;
+          const dedupeKey =
+            alm.dedupeKey ??
+            `${alm.severity}:${resolvedAlarmDevId ?? 'plant'}:${alm.message.slice(0, 64)}`;
+
+          const [existingActive] = await tx
+            .select()
+            .from(plantAlarms)
+            .where(
+              and(
+                eq(plantAlarms.plantId, plantId),
+                eq(plantAlarms.dedupeKey, dedupeKey),
+                eq(plantAlarms.state, 'ACTIVE'),
+              ),
+            )
+            .limit(1);
+
+          if (existingActive) {
+            const [updatedAlarm] = await tx
+              .update(plantAlarms)
+              .set({
+                lastOccurredAt: sourceTimestamp,
+                occurrenceCount: existingActive.occurrenceCount + 1,
+                sourceType: alarmSourceType,
+              })
+              .where(eq(plantAlarms.id, existingActive.id))
+              .returning();
+
+            emittedAlarms.push({
+              id: `alm-${updatedAlarm.id}`,
+              numericId: updatedAlarm.id,
+              timestamp: formatTimeHHMMSS(updatedAlarm.lastOccurredAt),
+              occurredAt: updatedAlarm.lastOccurredAt.toISOString(),
+              severity: updatedAlarm.severity,
+              state: updatedAlarm.state,
+              sourceType: updatedAlarm.sourceType,
+              occurrenceCount: updatedAlarm.occurrenceCount,
+              message: updatedAlarm.message,
+              source: updatedAlarm.source,
+            });
+          } else {
+            const [createdAlarm] = await tx
+              .insert(plantAlarms)
+              .values({
+                plantId,
+                deviceId: resolvedAlarmDevId,
+                occurredAt: sourceTimestamp,
+                lastOccurredAt: sourceTimestamp,
+                severity: alm.severity,
+                state: 'ACTIVE',
+                sourceType: alarmSourceType,
+                dedupeKey,
+                occurrenceCount: 1,
+                message: alm.message,
+                source: alm.source,
+              })
+              .returning();
+
+            emittedAlarms.push({
+              id: `alm-${createdAlarm.id}`,
+              numericId: createdAlarm.id,
+              timestamp: formatTimeHHMMSS(createdAlarm.lastOccurredAt),
+              occurredAt: createdAlarm.lastOccurredAt.toISOString(),
+              severity: createdAlarm.severity,
+              state: createdAlarm.state,
+              sourceType: createdAlarm.sourceType,
+              occurrenceCount: createdAlarm.occurrenceCount,
+              message: createdAlarm.message,
+              source: createdAlarm.source,
+            });
+          }
+        }
+
+        return {
+          deduplicated: false,
+          batchId: insertedBatch.id,
+          receivedAt: receivedAt.toISOString(),
+          observedAt: sourceTimestamp.toISOString(),
+          ingestedDevices: resolvedDevices.length,
+          isSimulated,
+          sourceType,
+          kpiIsNewer,
+          liveBroadcastUpdates,
+          emittedAlarms,
+        };
+      });
+    } catch (txError) {
+      // Handle concurrent parallel retries hitting uq_telemetry_batches_idem (SQLSTATE 23505)
+      if (!isPgUniqueViolation(txError)) {
+        throw txError;
+      }
+      const [existingBatch] = await db
+        .select({
+          id: telemetryBatches.id,
+          receivedAt: telemetryBatches.receivedAt,
+          payloadHash: telemetryBatches.payloadHash,
+          sourceType: telemetryBatches.sourceType,
+        })
+        .from(telemetryBatches)
+        .where(
+          and(
+            eq(telemetryBatches.plantId, plantId),
+            eq(telemetryBatches.edgeDeviceId, payload.edgeDeviceId),
+            eq(telemetryBatches.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .limit(1);
+
+      if (!existingBatch) {
+        throw txError;
+      }
+      result = resolveExistingBatch(existingBatch);
+    }
 
     if (!result.deduplicated && (result.kpiIsNewer || result.liveBroadcastUpdates?.length)) {
       realtimeBus.publish(plantId, {
@@ -983,6 +1121,8 @@ export async function ingestTelemetryBatch(
         observedAt: result.observedAt,
         receivedAt: result.receivedAt,
         quality: payload.quality,
+        isSimulated: result.isSimulated,
+        sourceType: result.sourceType,
         scenario: payload.scenario,
         kpis: result.kpiIsNewer ? payload.kpis : undefined,
         deviceUpdates: result.liveBroadcastUpdates,
@@ -997,6 +1137,8 @@ export async function ingestTelemetryBatch(
       observedAt: result.observedAt,
       receivedAt: result.receivedAt,
       ingestedDevices: result.ingestedDevices,
+      isSimulated: result.isSimulated,
+      sourceType: result.sourceType,
     };
   } catch (error) {
     if (error instanceof DomainError) throw error;
@@ -1010,6 +1152,7 @@ export async function createOrRotateEdgeCredential(
   edgeDeviceId: string,
   label: string,
   expiresInDays?: number,
+  credentialType: EdgeCredentialType = 'EDGE',
 ) {
   try {
     const credentialId = `edge_${crypto.randomBytes(8).toString('hex')}`;
@@ -1038,6 +1181,7 @@ export async function createOrRotateEdgeCredential(
         plantId,
         edgeDeviceId,
         label,
+        credentialType,
         secretHash: hash,
         secretSalt: salt,
         status: 'ACTIVE',
@@ -1049,6 +1193,7 @@ export async function createOrRotateEdgeCredential(
     return {
       credentialId,
       edgeDeviceId,
+      credentialType,
       label,
       secret: rawSecret,
       expiresAt: expiresAt?.toISOString() ?? null,
@@ -1066,6 +1211,7 @@ export async function listEdgeCredentials(plantId: number) {
         id: edgeCredentials.id,
         credentialId: edgeCredentials.credentialId,
         edgeDeviceId: edgeCredentials.edgeDeviceId,
+        credentialType: edgeCredentials.credentialType,
         label: edgeCredentials.label,
         status: edgeCredentials.status,
         lastUsedAt: edgeCredentials.lastUsedAt,

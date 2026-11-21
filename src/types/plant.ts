@@ -12,11 +12,15 @@ export type DataQuality = 'GOOD' | 'UNCERTAIN' | 'BAD' | 'STALE';
 
 export type DataMode = 'live' | 'simulated';
 
-export type FreshnessStatus = 'LIVE' | 'SIMULATED' | 'STALE' | 'OFFLINE';
+export type FreshnessStatus = 'LIVE' | 'SIMULATED' | 'STALE' | 'OFFLINE' | 'ERROR';
 
 export type AlarmState = 'ACTIVE' | 'ACKNOWLEDGED' | 'CLEARED';
 
 export type AlarmSourceType = 'EDGE' | 'SYSTEM' | 'SIMULATION';
+
+export type DataSourceType = 'EDGE' | 'SIMULATION' | 'SEED';
+
+export type EdgeCredentialType = 'EDGE' | 'SIMULATION';
 
 export type UserRole = 'VIEWER' | 'OPERATOR' | 'ADMIN';
 
@@ -40,6 +44,8 @@ export interface PlantDevice {
   sourceTimestamp?: string;
   receivedAt?: string;
   lastSequenceNumber?: number;
+  isSimulated?: boolean;
+  sourceType?: DataSourceType;
   liveParams: DeviceParameterRow[];
   designParams: DeviceParameterRow[];
 }
@@ -127,6 +133,8 @@ export interface PlantSnapshotResponse {
     observedAt: string | null;
     receivedAt: string | null;
     quality: DataQuality;
+    isSimulated: boolean;
+    sourceType: DataSourceType;
     staleAfterSec: number;
   };
   kpis: PlantKpis;

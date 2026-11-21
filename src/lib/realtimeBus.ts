@@ -1,5 +1,12 @@
 import { EventEmitter } from 'events';
-import type { AlarmEntry, DataQuality, DeviceStatus, PlantKpis, ScenarioId } from '../types/plant.ts';
+import type {
+  AlarmEntry,
+  DataQuality,
+  DataSourceType,
+  DeviceStatus,
+  PlantKpis,
+  ScenarioId,
+} from '../types/plant.ts';
 
 export interface PlantTelemetryStreamEvent {
   type: 'telemetry_tick' | 'alarm_update';
@@ -7,6 +14,8 @@ export interface PlantTelemetryStreamEvent {
   observedAt: string;
   receivedAt: string;
   quality: DataQuality;
+  isSimulated?: boolean;
+  sourceType?: DataSourceType;
   scenario?: ScenarioId;
   kpis?: PlantKpis;
   deviceUpdates?: Array<{

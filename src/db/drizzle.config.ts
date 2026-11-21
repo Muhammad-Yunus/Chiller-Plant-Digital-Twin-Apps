@@ -1,42 +1,37 @@
 import { defineConfig } from 'drizzle-kit';
 import * as dotenv from 'dotenv';
+import { resolveDbConnection } from './pgConfig.ts';
 
 dotenv.config({ override: true });
 
-const sqlHost = process.env.SQL_HOST;
-const sqlDbName = process.env.SQL_DB_NAME;
-const user = process.env.SQL_ADMIN_USER;
-const password = process.env.SQL_ADMIN_PASSWORD;
+const conn = resolveDbConnection({ admin: true });
 
-if (!sqlHost) {
-  throw new Error('SQL_HOST must be set in environment variables.');
+if (
+  !conn.connectionString &&
+  (!conn.host || !conn.database || !conn.user || !conn.password)
+) {
+  throw new Error(
+    'Set SUPABASE_DB_URL / DATABASE_URL or SQL_HOST, SQL_DB_NAME, SQL_ADMIN_USER, and SQL_ADMIN_PASSWORD.',
+  );
 }
-if (!sqlDbName) {
-  throw new Error('SQL_DB_NAME must be set in environment variables.');
-}
-if (!user) {
-  throw new Error('SQL_ADMIN_USER must be set in environment variables.');
-}
-if (!password) {
-  throw new Error('SQL_ADMIN_PASSWORD must be set in environment variables.');
-}
-
-const useSsl = process.env.SQL_SSL === 'true';
 
 export default defineConfig({
   schema: './src/db/schema.ts',
   out: './drizzle',
   dialect: 'postgresql',
   schemaFilter: ['public'],
-  dbCredentials: {
-    host: sqlHost,
-    port: process.env.SQL_PORT ? Number(process.env.SQL_PORT) : undefined,
-    user,
-    password,
-    database: sqlDbName,
-    ssl: useSsl
-      ? { rejectUnauthorized: process.env.SQL_SSL_REJECT_UNAUTHORIZED !== 'false' }
-      : false,
-  },
+  dbCredentials: conn.connectionString
+    ? {
+        url: conn.connectionString,
+        ssl: conn.ssl || false,
+      }
+    : {
+        host: conn.host!,
+        port: conn.port,
+        user: conn.user!,
+        password: conn.password!,
+        database: conn.database!,
+        ssl: conn.ssl || false,
+      },
   verbose: true,
 });

@@ -105,6 +105,7 @@ export const edgeCredentialCreateSchema = z
       .trim()
       .regex(/^[a-zA-Z0-9._-]{2,64}$/, 'Invalid edgeDeviceId'),
     label: z.string().trim().min(2).max(120),
+    credentialType: z.enum(['EDGE', 'SIMULATION']).default('EDGE'),
     expiresInDays: z.number().int().min(1).max(365).optional(),
   })
   .strict();

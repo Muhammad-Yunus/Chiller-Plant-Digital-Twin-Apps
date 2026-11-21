@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool, type PoolConfig } from 'pg';
+import { resolveDbConnection } from './pgConfig.ts';
 import * as schema from './schema.ts';
 
 dotenv.config({ override: true });
@@ -9,24 +10,20 @@ declare global {
   var _postgresPool: Pool | undefined;
 }
 
-function buildSslConfig(): PoolConfig['ssl'] {
-  if (process.env.SQL_SSL === 'true') {
-    return {
-      rejectUnauthorized: process.env.SQL_SSL_REJECT_UNAUTHORIZED !== 'false',
-    };
-  }
-  return undefined;
-}
-
 export const createPool = () => {
   if (!global._postgresPool) {
+    const conn = resolveDbConnection({ admin: false });
     const config: PoolConfig = {
-      host: process.env.SQL_HOST,
-      port: process.env.SQL_PORT ? Number(process.env.SQL_PORT) : undefined,
-      user: process.env.SQL_USER,
-      password: process.env.SQL_PASSWORD,
-      database: process.env.SQL_DB_NAME,
-      ssl: buildSslConfig(),
+      ...(conn.connectionString
+        ? { connectionString: conn.connectionString }
+        : {
+            host: conn.host,
+            port: conn.port,
+            user: conn.user,
+            password: conn.password,
+            database: conn.database,
+          }),
+      ssl: conn.ssl || undefined,
       max: Number(process.env.SQL_POOL_MAX ?? 10),
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 15000,

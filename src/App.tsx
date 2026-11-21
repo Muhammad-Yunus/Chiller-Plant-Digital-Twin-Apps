@@ -31,6 +31,7 @@ import {
   CameraPreset,
   DataMode,
   DataQuality,
+  DataSourceType,
   DeviceCategory,
   DeviceGroup,
   DeviceStatus,
@@ -72,6 +73,8 @@ interface StreamPayload {
   observedAt: string;
   receivedAt: string;
   quality: DataQuality;
+  isSimulated?: boolean;
+  sourceType?: DataSourceType;
   scenario?: ScenarioId;
   kpis?: PlantKpis;
   deviceUpdates?: Array<{
@@ -131,6 +134,8 @@ export function App() {
   const [dataMode, setDataMode] = useState<DataMode>('simulated');
   const [plantRole, setPlantRole] = useState<UserRole>('VIEWER');
   const [observedAt, setObservedAt] = useState<string | null>(null);
+  const [backendSimulated, setBackendSimulated] = useState<boolean>(false);
+  const [backendSourceType, setBackendSourceType] = useState<DataSourceType>('EDGE');
   const [staleAfterSec, setStaleAfterSec] = useState<number>(15);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
@@ -366,6 +371,8 @@ export function App() {
         setScenario(snapshot.plant.scenario);
         setPlantRole(snapshot.plant.role);
         setObservedAt(snapshot.plant.observedAt);
+        setBackendSimulated(snapshot.plant.isSimulated);
+        setBackendSourceType(snapshot.plant.sourceType);
         setStaleAfterSec(snapshot.plant.staleAfterSec || 15);
         setHasLiveHydrated(true);
         setNowMs(Date.now());
@@ -454,6 +461,12 @@ export function App() {
 
       if (parsed.type === 'telemetry_tick') {
         setObservedAt(parsed.observedAt);
+        if (typeof parsed.isSimulated === 'boolean') {
+          setBackendSimulated(parsed.isSimulated);
+        }
+        if (parsed.sourceType) {
+          setBackendSourceType(parsed.sourceType);
+        }
         setNowMs(Date.now());
         if (parsed.scenario) setScenario(parsed.scenario);
         if (parsed.kpis) setKpis(parsed.kpis);
@@ -549,8 +562,32 @@ export function App() {
           throw new Error(`Stream connection failed (${res.status})`);
         }
 
+        const recoveredFromDrop = attempt > 0;
         setStreamState('connected');
         attempt = 0;
+
+        if (recoveredFromDrop) {
+          // Rehydrate missed ticks from latest persisted snapshot after SSE reconnect
+          void fetch(`/api/v1/plants/${DEFAULT_PLANT_CODE}/snapshot`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: activeController.signal,
+          })
+            .then((snapRes) => (snapRes.ok ? (snapRes.json() as Promise<PlantSnapshotResponse>) : null))
+            .then((snap) => {
+              if (!snap || cancelled) return;
+              setKpis(snap.kpis);
+              setDeviceGroups(snap.deviceGroups);
+              setAlarms(snap.alarms);
+              setScenario(snap.plant.scenario);
+              setObservedAt(snap.plant.observedAt);
+              setBackendSimulated(snap.plant.isSimulated);
+              setBackendSourceType(snap.plant.sourceType);
+              setNowMs(Date.now());
+            })
+            .catch(() => {
+              // Next tick or manual retry will reconcile
+            });
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -870,15 +907,21 @@ export function App() {
     setRefreshNonce((n) => n + 1);
   }, []);
 
-  // Compute dynamic Freshness Status & age label
+  // Compute dynamic Freshness Status & age label (LIVE | SIMULATED | STALE | OFFLINE | ERROR)
   const { freshnessStatus, observedAgeLabel } = useMemo((): {
     freshnessStatus: FreshnessStatus;
     observedAgeLabel: string;
   } => {
     if (dataMode === 'simulated') {
-      return { freshnessStatus: 'SIMULATED', observedAgeLabel: 'DEMO TICK' };
+      return { freshnessStatus: 'SIMULATED', observedAgeLabel: 'LOCAL DEMO' };
     }
-    if (!currentUser || snapshotError || streamState === 'offline') {
+    if (snapshotError) {
+      return {
+        freshnessStatus: 'ERROR',
+        observedAgeLabel: 'API ERROR',
+      };
+    }
+    if (!currentUser || streamState === 'offline') {
       return {
         freshnessStatus: 'OFFLINE',
         observedAgeLabel: !currentUser ? 'SIGN IN REQUIRED' : 'DISCONNECTED',
@@ -895,19 +938,36 @@ export function App() {
       ? Math.max(0, Math.floor((nowMs - obsMs) / 1000))
       : staleAfterSec + 1;
     const isStale = ageSec > staleAfterSec || streamState === 'reconnecting';
+    if (isStale) {
+      return {
+        freshnessStatus: 'STALE',
+        observedAgeLabel: formatAge(ageSec),
+      };
+    }
+    if (backendSimulated || backendSourceType === 'SIMULATION' || backendSourceType === 'SEED') {
+      return {
+        freshnessStatus: 'SIMULATED',
+        observedAgeLabel:
+          backendSourceType === 'SEED'
+            ? `SEEDED · ${formatAge(ageSec)}`
+            : `EDGE SIM · ${formatAge(ageSec)}`,
+      };
+    }
     return {
-      freshnessStatus: isStale ? 'STALE' : 'LIVE',
+      freshnessStatus: 'LIVE',
       observedAgeLabel: formatAge(ageSec),
     };
   }, [
     dataMode,
-    currentUser,
     snapshotError,
+    currentUser,
     streamState,
     observedAt,
     snapshotLoading,
     nowMs,
     staleAfterSec,
+    backendSimulated,
+    backendSourceType,
   ]);
 
   const latestTrend = trends[trends.length - 1] ?? {
@@ -919,7 +979,11 @@ export function App() {
 
   const isLiveBlocked =
     dataMode === 'live' &&
-    (!currentUser || Boolean(snapshotError) || !hasLiveHydrated || freshnessStatus === 'OFFLINE');
+    (!currentUser ||
+      Boolean(snapshotError) ||
+      !hasLiveHydrated ||
+      freshnessStatus === 'OFFLINE' ||
+      freshnessStatus === 'ERROR');
   const canOperateAlarms =
     dataMode === 'simulated' || plantRole === 'OPERATOR' || plantRole === 'ADMIN';
 
@@ -928,7 +992,7 @@ export function App() {
       ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
       : freshnessStatus === 'STALE'
         ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
-        : freshnessStatus === 'OFFLINE'
+        : freshnessStatus === 'OFFLINE' || freshnessStatus === 'ERROR'
           ? 'border-rose-500/50 bg-rose-500/10 text-rose-300'
           : 'border-sky-500/35 bg-[#081526] text-sky-300';
 
@@ -1023,9 +1087,11 @@ export function App() {
                 className={`w-1.5 h-1.5 rounded-full ${
                   freshnessStatus === 'LIVE'
                     ? 'bg-emerald-400'
-                    : freshnessStatus === 'STALE'
-                      ? 'bg-amber-400'
-                      : 'bg-rose-500'
+                    : freshnessStatus === 'SIMULATED'
+                      ? 'bg-sky-400'
+                      : freshnessStatus === 'STALE'
+                        ? 'bg-amber-400'
+                        : 'bg-rose-500'
                 }`}
               />
               <span>{freshnessStatus}</span>

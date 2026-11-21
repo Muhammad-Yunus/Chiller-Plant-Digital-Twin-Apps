@@ -420,12 +420,14 @@ export function createApp(deps: AppDependencies = {}) {
           parsed.data.edgeDeviceId,
           parsed.data.label,
           parsed.data.expiresInDays,
+          parsed.data.credentialType,
         );
         logEvent('info', 'edge_credential_issued', {
           requestId: req.requestId,
           plantCode: req.authorizedPlant!.code,
           edgeDeviceId: parsed.data.edgeDeviceId,
           credentialId: issued.credentialId,
+          credentialType: parsed.data.credentialType,
         });
         res.status(201).json(issued);
       } catch (error) {
@@ -513,10 +515,12 @@ export function createApp(deps: AppDependencies = {}) {
       }
 
       try {
+        const sourceType = req.edgeCredential?.credentialType ?? 'EDGE';
         const result = await repo.ingestTelemetryBatch(
           req.authorizedPlant!.id,
           idempotencyKey,
           parsed.data,
+          { sourceType },
         );
         const latencyMs = Number(
           (Number(process.hrtime.bigint() - started) / 1_000_000).toFixed(2),
@@ -531,6 +535,7 @@ export function createApp(deps: AppDependencies = {}) {
           plantCode: parsed.data.plantCode,
           edgeDeviceId: parsed.data.edgeDeviceId,
           credentialId: req.edgeCredential?.credentialId,
+          sourceType,
           sequenceNumber: parsed.data.sequenceNumber,
           sampleCount: result.ingestedDevices,
           deduplicated: result.deduplicated,

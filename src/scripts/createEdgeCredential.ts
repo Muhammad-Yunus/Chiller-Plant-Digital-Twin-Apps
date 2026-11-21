@@ -4,7 +4,7 @@ import { closePool, db } from '../db/index.ts';
 import { createOrRotateEdgeCredential } from '../db/plantRepository.ts';
 import { plants } from '../db/schema.ts';
 
-dotenv.config({ override: true });
+dotenv.config({ override: true, quiet: true });
 
 function getArg(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
@@ -15,6 +15,10 @@ async function main() {
   const plantCode = getArg('--plant') ?? 'CENTRAL_PLANT_01';
   const edgeDeviceId = getArg('--edge') ?? 'gw-central-01';
   const label = getArg('--label') ?? `Edge Gateway (${edgeDeviceId})`;
+  const typeArg = (getArg('--type') ?? 'EDGE').toUpperCase();
+  if (typeArg !== 'EDGE' && typeArg !== 'SIMULATION') {
+    throw new Error('--type must be EDGE or SIMULATION');
+  }
   const expiresArg = getArg('--expires-days');
   const expiresInDays = expiresArg ? Number(expiresArg) : undefined;
 
@@ -35,6 +39,7 @@ async function main() {
     edgeDeviceId,
     label,
     expiresInDays,
+    typeArg,
   );
 
   console.log('Edge gateway credential issued (store secret securely, shown once):');
@@ -44,6 +49,7 @@ async function main() {
         plantCode: plant.code,
         credentialId: issued.credentialId,
         edgeDeviceId: issued.edgeDeviceId,
+        credentialType: issued.credentialType,
         label: issued.label,
         secret: issued.secret,
         expiresAt: issued.expiresAt,

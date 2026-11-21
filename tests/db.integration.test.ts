@@ -25,7 +25,11 @@ import {
 
 dotenv.config({ override: true });
 
-const HAS_DB = Boolean(process.env.SQL_HOST && process.env.SQL_DB_NAME && process.env.SQL_USER);
+const HAS_DB = Boolean(
+  process.env.SUPABASE_DB_URL ||
+    process.env.DATABASE_URL ||
+    (process.env.SQL_HOST && process.env.SQL_DB_NAME && process.env.SQL_USER),
+);
 const TEST_PLANT_A = 'TEST_PLANT_99';
 const TEST_PLANT_B = 'TEST_PLANT_98';
 
@@ -68,33 +72,35 @@ describe.skipIf(!HAS_DB)('PostgreSQL Drizzle transaction & repository integratio
     };
 
     // 1. Ingest all 19 devices cleanly with Edge alarm
-    const firstRes = await ingestTelemetryBatch(plantAId, 'db-test-batch-1', {
+    const firstPayload = {
       plantCode: TEST_PLANT_A,
       edgeDeviceId: 'gw-test-99',
       batchId: 'db-test-batch-1',
       sequenceNumber: 10,
       payloadVersion: '1.0.0',
       observedAt: tNew.toISOString(),
-      scenario: 'Peak Cooling',
-      quality: 'GOOD',
+      scenario: 'Peak Cooling' as const,
+      quality: 'GOOD' as const,
       kpis: baseKpis,
       devices: allDevices.map((d, idx) => ({
         id: d.id,
-        status: 'RUNNING',
-        quality: 'GOOD',
+        status: 'RUNNING' as const,
+        quality: 'GOOD' as const,
         loadPct: Number((75 + idx * 0.5).toFixed(1)),
         metrics: { Load: Number((75 + idx * 0.5).toFixed(1)), COP: 6.1 },
       })),
       alarms: [
         {
           deviceId: 'ch-1',
-          severity: 'WARN',
+          severity: 'WARN' as const,
           message: 'High condenser approach on Chiller #1',
           source: 'Edge Gateway',
           dedupeKey: 'ch1-high-approach',
         },
       ],
-    });
+    };
+
+    const firstRes = await ingestTelemetryBatch(plantAId, 'db-test-batch-1', firstPayload);
 
     expect(firstRes.deduplicated).toBe(false);
     expect(firstRes.ingestedDevices).toBe(19);
@@ -110,25 +116,8 @@ describe.skipIf(!HAS_DB)('PostgreSQL Drizzle transaction & repository integratio
       );
     expect(samplesAfterFirst).toHaveLength(19);
 
-    // 2. Retry with identical Idempotency-Key must safely deduplicate without inserting duplicate rows
-    const retryRes = await ingestTelemetryBatch(plantAId, 'db-test-batch-1', {
-      plantCode: TEST_PLANT_A,
-      edgeDeviceId: 'gw-test-99',
-      batchId: 'db-test-batch-1',
-      sequenceNumber: 10,
-      payloadVersion: '1.0.0',
-      observedAt: tNew.toISOString(),
-      scenario: 'Peak Cooling',
-      quality: 'GOOD',
-      kpis: baseKpis,
-      devices: allDevices.map((d) => ({
-        id: d.id,
-        status: 'RUNNING',
-        quality: 'GOOD',
-        loadPct: 99,
-        metrics: { Load: 99 },
-      })),
-    });
+    // 2. Retry with identical Idempotency-Key & identical payload must safely deduplicate
+    const retryRes = await ingestTelemetryBatch(plantAId, 'db-test-batch-1', firstPayload);
     expect(retryRes.deduplicated).toBe(true);
     expect(retryRes.ingestedDevices).toBe(0);
 
@@ -207,8 +196,16 @@ describe.skipIf(!HAS_DB)('PostgreSQL Drizzle transaction & repository integratio
     const trendsA = await getDeviceTrends(plantAId, 'ch-1', 50);
     expect(trendsA.points.length).toBeGreaterThanOrEqual(2);
 
+    // Non-ch-1 devices also store historical samples cleanly
+    const pumpTrends = await getDeviceTrends(plantAId, 'chwp-1', 50);
+    expect(pumpTrends.points.length).toBeGreaterThanOrEqual(1);
+    const valveTrends = await getDeviceTrends(plantAId, 'bv-1', 50);
+    expect(valveTrends.points.length).toBeGreaterThanOrEqual(1);
+
     const snapshotA = await getPlantSnapshot(plantAId, TEST_PLANT_A, 'ADMIN');
     expect(snapshotA.deviceGroups.flatMap((g) => g.devices)).toHaveLength(19);
+    expect(snapshotA.plant.sourceType).toBe('EDGE');
+    expect(snapshotA.plant.isSimulated).toBe(false);
 
     const batchRows = await db
       .select()
@@ -224,11 +221,98 @@ describe.skipIf(!HAS_DB)('PostgreSQL Drizzle transaction & repository integratio
     expect(kpiRows.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('rotates prior ACTIVE edge credentials for the same edgeDeviceId', async () => {
-    const first = await createOrRotateEdgeCredential(plantAId, 'gw-rot-01', 'Primary GW');
-    const second = await createOrRotateEdgeCredential(plantAId, 'gw-rot-01', 'Rotated GW');
+  it('handles parallel concurrent duplicate retries cleanly and rejects same-key payload mismatch with 409', { timeout: 20_000 }, async () => {
+    const groups = createInitialDeviceGroups();
+    const allDevices = groups.flatMap((g) => g.devices);
+    const ts = new Date(Date.now() + 25_000);
+    const concurrentPayload = {
+      plantCode: TEST_PLANT_A,
+      edgeDeviceId: 'gw-concurrent-99',
+      batchId: 'db-concurrent-key-1',
+      sequenceNumber: 200,
+      payloadVersion: '1.0.0',
+      observedAt: ts.toISOString(),
+      scenario: 'Steady State' as const,
+      quality: 'GOOD' as const,
+      kpis: {
+        coolingLoadMw: 9.2,
+        totalPowerMw: 1.9,
+        systemCop: 4.84,
+        wetBulbC: 27.0,
+        chwSupplyC: 6.9,
+        chwReturnC: 11.7,
+        deltaTK: 4.8,
+        cwSupplyC: 31.5,
+        towerApproachK: 4.5,
+        chillersOn: 3,
+      },
+      devices: allDevices.map((d) => ({
+        id: d.id,
+        status: 'RUNNING' as const,
+        quality: 'GOOD' as const,
+        loadPct: 86.0,
+        metrics: { Load: 86.0, COP: 6.0 },
+      })),
+    };
 
-    expect(first.credentialId).not.toBe(second.credentialId);
+    // Parallel race with identical payload + identical Idempotency-Key
+    const outcomes = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        ingestTelemetryBatch(plantAId, 'db-concurrent-key-1', concurrentPayload, {
+          sourceType: 'SIMULATION',
+        }),
+      ),
+    );
+    const nonDedup = outcomes.filter((o) => !o.deduplicated);
+    const dedup = outcomes.filter((o) => o.deduplicated);
+    expect(nonDedup).toHaveLength(1);
+    expect(dedup).toHaveLength(4);
+    expect(outcomes.every((o) => o.isSimulated && o.sourceType === 'SIMULATION')).toBe(true);
+
+    // Same Idempotency-Key with altered payload must reject with 409 IDEMPOTENCY_CONFLICT
+    await expect(
+      ingestTelemetryBatch(
+        plantAId,
+        'db-concurrent-key-1',
+        {
+          ...concurrentPayload,
+          kpis: { ...concurrentPayload.kpis, coolingLoadMw: 12.4 },
+        },
+        { sourceType: 'SIMULATION' },
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
+
+    // Verify Plant A snapshot reports SIMULATION provenance (never masquerading as EDGE live)
+    const snapSim = await getPlantSnapshot(plantAId, TEST_PLANT_A, 'VIEWER');
+    expect(snapSim.plant.isSimulated).toBe(true);
+    expect(snapSim.plant.sourceType).toBe('SIMULATION');
+  });
+
+  it('marks seeded development plants as SEED/isSimulated and stores credentialType on rotation', { timeout: 20_000 }, async () => {
+    const snapSeed = await getPlantSnapshot(plantBId, TEST_PLANT_B, 'VIEWER');
+    expect(snapSeed.plant.isSimulated).toBe(true);
+    expect(snapSeed.plant.sourceType).toBe('SEED');
+
+    const first = await createOrRotateEdgeCredential(
+      plantAId,
+      'gw-rot-01',
+      'Simulator GW',
+      undefined,
+      'SIMULATION',
+    );
+    const second = await createOrRotateEdgeCredential(
+      plantAId,
+      'gw-rot-01',
+      'Rotated Real GW',
+      undefined,
+      'EDGE',
+    );
+
+    expect(first.credentialType).toBe('SIMULATION');
+    expect(second.credentialType).toBe('EDGE');
 
     const rows = await db
       .select()
@@ -242,6 +326,8 @@ describe.skipIf(!HAS_DB)('PostgreSQL Drizzle transaction & repository integratio
     const firstRow = rows.find((r) => r.credentialId === first.credentialId);
     const secondRow = rows.find((r) => r.credentialId === second.credentialId);
     expect(firstRow?.status).toBe('ROTATED');
+    expect(firstRow?.credentialType).toBe('SIMULATION');
     expect(secondRow?.status).toBe('ACTIVE');
+    expect(secondRow?.credentialType).toBe('EDGE');
   });
 });

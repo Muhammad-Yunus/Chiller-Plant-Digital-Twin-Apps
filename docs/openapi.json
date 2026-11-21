@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Chiller Plant Twin Telemetry & Control API",
-    "version": "1.1.0",
-    "description": "Production HVAC Digital Twin API separating Operator RBAC (Firebase ID Tokens) from IoT Edge Gateway ingestion credentials (X-Edge-Credential-Id + X-Edge-Secret)."
+    "version": "1.2.0",
+    "description": "Production HVAC Digital Twin API separating Operator RBAC (Firebase ID Tokens) from IoT Edge Gateway / Simulator ingestion credentials (X-Edge-Credential-Id + X-Edge-Secret) with server-verified provenance."
   },
   "servers": [
     {
@@ -270,11 +270,28 @@
         }
       },
       "post": {
-        "summary": "Create or rotate an edge gateway credential (ADMIN)",
+        "summary": "Create or rotate an edge gateway or simulator credential (ADMIN)",
         "security": [{ "OperatorBearerAuth": [] }],
         "parameters": [
           { "name": "plantCode", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["edgeDeviceId", "label"],
+                "properties": {
+                  "edgeDeviceId": { "type": "string" },
+                  "label": { "type": "string" },
+                  "credentialType": { "type": "string", "enum": ["EDGE", "SIMULATION"], "default": "EDGE" },
+                  "expiresInDays": { "type": "integer", "minimum": 1, "maximum": 365 }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "201": { "description": "Issued credential (one-time raw secret returned)" }
         }
@@ -318,10 +335,11 @@
           }
         },
         "responses": {
-          "200": { "description": "Batch persisted or safely deduplicated" },
+          "200": { "description": "Batch persisted or safely deduplicated (returns server-verified isSimulated & sourceType)" },
           "400": { "description": "Schema validation error" },
           "401": { "description": "Invalid edge credentials" },
           "403": { "description": "Cross-plant or edgeDeviceId mismatch" },
+          "409": { "description": "Idempotency-Key reused with a different payload (IDEMPOTENCY_CONFLICT)" },
           "429": { "description": "Rate limit exceeded" }
         }
       }

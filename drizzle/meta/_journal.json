@@ -8,6 +8,13 @@
       "when": 1795263764244,
       "tag": "0000_bouncy_gambit",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795265737953,
+      "tag": "0001_skinny_zaladane",
+      "breakpoints": true
     }
   ]
 }

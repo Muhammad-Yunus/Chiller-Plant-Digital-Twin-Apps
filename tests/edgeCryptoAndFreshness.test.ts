@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { isNewerReading } from '../src/db/plantRepository.ts';
+import { resolveDbConnection } from '../src/db/pgConfig.ts';
+import { computePayloadHash, isNewerReading } from '../src/db/plantRepository.ts';
 import {
   generateEdgeSecret,
   hashEdgeSecret,
   verifyEdgeSecret,
 } from '../src/lib/edgeCrypto.ts';
 import { sanitizeMeta } from '../src/lib/logger.ts';
+import type { TelemetryIngestPayload } from '../src/validation/telemetrySchemas.ts';
 
 describe('edge gateway credential hashing', () => {
   it('verifies valid generated secrets and rejects invalid secrets', () => {
@@ -57,5 +59,66 @@ describe('structured logger redaction', () => {
     expect((sanitized.nested as Record<string, unknown>).plantCode).toBe(
       'CENTRAL_PLANT_01',
     );
+  });
+});
+
+describe('Supabase pooler TLS & canonical payload hash', () => {
+  it('enforces rejectUnauthorized=true by default for SUPABASE_DB_URL unless explicitly disabled', () => {
+    const prevUrl = process.env.SUPABASE_DB_URL;
+    const prevReject = process.env.SQL_SSL_REJECT_UNAUTHORIZED;
+    try {
+      process.env.SUPABASE_DB_URL = 'postgresql://postgres.ref:pw@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres';
+      delete process.env.SQL_SSL_REJECT_UNAUTHORIZED;
+      const secureConn = resolveDbConnection();
+      expect(secureConn.connectionString).toContain('pooler.supabase.com:6543');
+      expect(secureConn.ssl).toEqual({ rejectUnauthorized: true });
+
+      process.env.SQL_SSL_REJECT_UNAUTHORIZED = 'false';
+      const optOutConn = resolveDbConnection();
+      expect(optOutConn.ssl).toEqual({ rejectUnauthorized: false });
+    } finally {
+      if (prevUrl === undefined) delete process.env.SUPABASE_DB_URL;
+      else process.env.SUPABASE_DB_URL = prevUrl;
+      if (prevReject === undefined) delete process.env.SQL_SSL_REJECT_UNAUTHORIZED;
+      else process.env.SQL_SSL_REJECT_UNAUTHORIZED = prevReject;
+    }
+  });
+
+  it('produces identical SHA-256 payloadHash regardless of key insertion order and detects value changes', () => {
+    const p1: TelemetryIngestPayload = {
+      plantCode: 'CENTRAL_PLANT_01',
+      edgeDeviceId: 'gw-1',
+      sequenceNumber: 1,
+      payloadVersion: '1.0.0',
+      observedAt: '2026-11-21T12:00:00.000Z',
+      scenario: 'Steady State',
+      quality: 'GOOD',
+      kpis: {
+        coolingLoadMw: 9.2,
+        totalPowerMw: 1.9,
+        systemCop: 4.8,
+        wetBulbC: 27,
+        chwSupplyC: 6.9,
+        chwReturnC: 11.7,
+        deltaTK: 4.8,
+        cwSupplyC: 31.5,
+        towerApproachK: 4.5,
+        chillersOn: 3,
+      },
+      devices: [{ id: 'ch-1', status: 'RUNNING', quality: 'GOOD', loadPct: 88, metrics: { a: 1, b: 2 } }],
+    };
+
+    const p2: TelemetryIngestPayload = {
+      ...p1,
+      devices: [{ id: 'ch-1', status: 'RUNNING', quality: 'GOOD', loadPct: 88, metrics: { b: 2, a: 1 } }],
+    };
+
+    const p3: TelemetryIngestPayload = {
+      ...p1,
+      devices: [{ id: 'ch-1', status: 'RUNNING', quality: 'GOOD', loadPct: 89, metrics: { a: 1, b: 2 } }],
+    };
+
+    expect(computePayloadHash(p1)).toBe(computePayloadHash(p2));
+    expect(computePayloadHash(p1)).not.toBe(computePayloadHash(p3));
   });
 });

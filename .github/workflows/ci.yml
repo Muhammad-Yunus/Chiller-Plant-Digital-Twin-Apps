@@ -34,11 +34,16 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
 
       - name: TypeScript type-check
-        run: npm run lint
+        run: bun run lint
 
       - name: Drizzle migration & schema check
         env:
@@ -49,8 +54,8 @@ jobs:
           SQL_ADMIN_PASSWORD: ci_postgres_password
           SQL_SSL: "false"
         run: |
-          npx drizzle-kit check --config=src/db/drizzle.config.ts
-          npm run db:migrate
+          bunx drizzle-kit check --config=src/db/drizzle.config.ts
+          bun run db:migrate
 
       - name: Unit, API & PostgreSQL transaction tests
         env:
@@ -60,7 +65,29 @@ jobs:
           SQL_USER: postgres
           SQL_PASSWORD: ci_postgres_password
           SQL_SSL: "false"
-        run: npm test
+        run: bun run test
 
-      - name: Production frontend build
-        run: npm run build
+      - name: Production frontend build & Node 22 startup smoke check
+        env:
+          NODE_ENV: production
+          PORT: 3000
+          SQL_HOST: 127.0.0.1
+          SQL_PORT: 5432
+          SQL_DB_NAME: chiller_plant_twin_ci
+          SQL_USER: postgres
+          SQL_PASSWORD: ci_postgres_password
+          SQL_SSL: "false"
+        run: |
+          bun run build
+          node server.ts &
+          SERVER_PID=$!
+          for i in $(seq 1 15); do
+            if wget -qO- http://127.0.0.1:3000/api/health; then
+              kill $SERVER_PID
+              wait $SERVER_PID || true
+              exit 0
+            fi
+            sleep 1
+          done
+          kill $SERVER_PID || true
+          exit 1

@@ -1,8 +1,10 @@
+import { EventEmitter } from 'events';
 import { NextFunction, Response } from 'express';
 import http from 'http';
 import { AddressInfo } from 'net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DomainError } from '../src/db/plantRepository.ts';
+import { computePayloadHash, DomainError } from '../src/db/plantRepository.ts';
+import type { PlantTelemetryStreamEvent } from '../src/lib/realtimeBus.ts';
 import { AuthRequest } from '../src/middleware/auth.ts';
 import { AppDependencies, createApp } from '../src/server/app.ts';
 import { UserRole } from '../src/types/plant.ts';
@@ -14,7 +16,9 @@ const ROLE_WEIGHT: Record<UserRole, number> = {
 };
 
 function createTestServer(overrides: AppDependencies = {}) {
-  const seenBatches = new Set<string>();
+  const seenBatches = new Map<string, { hash: string; sourceType: 'EDGE' | 'SIMULATION' }>();
+  const bus = new EventEmitter();
+  let lastSourceType: 'EDGE' | 'SIMULATION' = 'EDGE';
   const deviceOwnership: Record<string, string[]> = {
     CENTRAL_PLANT_01: ['ch-1', 'ch-2'],
     PLANT_BETA: ['PLANT_BETA:ch-1'],
@@ -31,6 +35,8 @@ function createTestServer(overrides: AppDependencies = {}) {
         observedAt: new Date().toISOString(),
         receivedAt: new Date().toISOString(),
         quality: 'GOOD',
+        isSimulated: lastSourceType === 'SIMULATION',
+        sourceType: lastSourceType,
         staleAfterSec: 15,
       },
       kpis: {
@@ -92,9 +98,19 @@ function createTestServer(overrides: AppDependencies = {}) {
       source: 'Edge Gateway',
       clearedAt: new Date().toISOString(),
     }),
-    ingestTelemetryBatch: async (plantId, idempotencyKey, payload) => {
+    ingestTelemetryBatch: async (plantId, idempotencyKey, payload, options) => {
+      const sourceType = options?.sourceType ?? 'EDGE';
+      const hash = computePayloadHash(payload);
       const key = `${plantId}:${payload.edgeDeviceId}:${idempotencyKey}`;
-      if (seenBatches.has(key)) {
+      const existing = seenBatches.get(key);
+      if (existing) {
+        if (existing.hash !== hash) {
+          throw new DomainError(
+            409,
+            'IDEMPOTENCY_CONFLICT',
+            'Idempotency-Key already used with a different telemetry payload',
+          );
+        }
         return {
           ok: true,
           deduplicated: true,
@@ -102,9 +118,24 @@ function createTestServer(overrides: AppDependencies = {}) {
           observedAt: payload.observedAt,
           receivedAt: new Date().toISOString(),
           ingestedDevices: 0,
+          isSimulated: existing.sourceType === 'SIMULATION',
+          sourceType: existing.sourceType,
         };
       }
-      seenBatches.add(key);
+      seenBatches.set(key, { hash, sourceType });
+      lastSourceType = sourceType;
+      const event: PlantTelemetryStreamEvent = {
+        type: 'telemetry_tick',
+        plantCode: payload.plantCode,
+        observedAt: payload.observedAt,
+        receivedAt: new Date().toISOString(),
+        quality: payload.quality,
+        isSimulated: sourceType === 'SIMULATION',
+        sourceType,
+        scenario: payload.scenario,
+        kpis: payload.kpis,
+      };
+      bus.emit(`plant:${plantId}`, event);
       return {
         ok: true,
         deduplicated: false,
@@ -112,11 +143,20 @@ function createTestServer(overrides: AppDependencies = {}) {
         observedAt: payload.observedAt,
         receivedAt: new Date().toISOString(),
         ingestedDevices: payload.devices.length,
+        isSimulated: sourceType === 'SIMULATION',
+        sourceType,
       };
     },
-    createOrRotateEdgeCredential: async (_plantId, edgeDeviceId, label) => ({
+    createOrRotateEdgeCredential: async (
+      _plantId,
+      edgeDeviceId,
+      label,
+      _expiresInDays,
+      credentialType = 'EDGE',
+    ) => ({
       credentialId: 'edge_test123',
       edgeDeviceId,
+      credentialType,
       label,
       secret: 'cp_edge_mock_secret',
       expiresAt: null,
@@ -174,7 +214,9 @@ function createTestServer(overrides: AppDependencies = {}) {
   const requireEdgeAuth = (req: AuthRequest, res: Response, next: NextFunction) => {
     const credId = req.header('x-edge-credential-id');
     const secret = req.header('x-edge-secret');
-    if (credId !== 'edge_plant1' || secret !== 'valid-secret') {
+    const isRealEdge = credId === 'edge_plant1' && secret === 'valid-secret';
+    const isSimEdge = credId === 'edge_sim1' && secret === 'sim-secret';
+    if (!isRealEdge && !isSimEdge) {
       res.status(401).json({ error: { code: 'EDGE_UNAUTHORIZED', message: 'Invalid edge credentials' } });
       return;
     }
@@ -189,15 +231,16 @@ function createTestServer(overrides: AppDependencies = {}) {
     }
     req.authorizedPlant = { id: 1, code: 'CENTRAL_PLANT_01', name: 'Central Plant' };
     req.edgeCredential = {
-      id: 1,
-      credentialId: 'edge_plant1',
+      id: isSimEdge ? 2 : 1,
+      credentialId: credId!,
       edgeDeviceId: 'gw-central-01',
       plantId: 1,
+      credentialType: isSimEdge ? 'SIMULATION' : 'EDGE',
     };
     next();
   };
 
-  const { app } = createApp({
+  const { app, closeActiveStreams } = createApp({
     checkReadiness: async () => ({
       ready: true,
       checks: { database: 'ok', auth: 'ok' },
@@ -206,6 +249,13 @@ function createTestServer(overrides: AppDependencies = {}) {
     requirePlantRole,
     requireEdgeAuth,
     repo: defaultRepo,
+    subscribePlantStream: (plantId, listener) => {
+      const ch = `plant:${plantId}`;
+      bus.on(ch, listener);
+      return () => {
+        bus.off(ch, listener);
+      };
+    },
     ...overrides,
   });
 
@@ -215,7 +265,10 @@ function createTestServer(overrides: AppDependencies = {}) {
       const addr = server.address() as AddressInfo;
       resolve({
         baseUrl: `http://127.0.0.1:${addr.port}`,
-        close: () => new Promise<void>((res) => server.close(() => res())),
+        close: () => {
+          closeActiveStreams();
+          return new Promise<void>((res) => server.close(() => res()));
+        },
       });
     });
   });
@@ -413,6 +466,97 @@ describe('Express API integration & authorization tests', () => {
     const retryJson = (await retry.json()) as { deduplicated: boolean; ingestedDevices: number };
     expect(retryJson.deduplicated).toBe(true);
     expect(retryJson.ingestedDevices).toBe(0);
+
+    // Reusing the same Idempotency-Key with a DIFFERENT payload returns 409 IDEMPOTENCY_CONFLICT
+    const conflict = await fetch(`${srv.baseUrl}/api/v1/telemetry/ingest`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        ...validBody,
+        kpis: { ...validBody.kpis, coolingLoadMw: 15.0 },
+      }),
+    });
+    expect(conflict.status).toBe(409);
+    const conflictJson = (await conflict.json()) as { error: { code: string } };
+    expect(conflictJson.error.code).toBe('IDEMPOTENCY_CONFLICT');
+  });
+
+  it('stamps SIMULATION credential provenance onto snapshot and SSE ticks and enforces SSE authz', async () => {
+    const srv = await createTestServer();
+    closeServer = srv.close;
+
+    // Cross-plant SSE rejected
+    const forbiddenSse = await fetch(`${srv.baseUrl}/api/v1/plants/PLANT_BETA/stream`, {
+      headers: { Authorization: 'Bearer viewer-plant1' },
+    });
+    expect(forbiddenSse.status).toBe(403);
+
+    // Open authorized SSE stream
+    const streamController = new AbortController();
+    const sseRes = await fetch(`${srv.baseUrl}/api/v1/plants/CENTRAL_PLANT_01/stream`, {
+      headers: { Authorization: 'Bearer viewer-plant1', Accept: 'text/event-stream' },
+      signal: streamController.signal,
+    });
+    expect(sseRes.status).toBe(200);
+    const reader = sseRes.body!.getReader();
+    const decoder = new TextDecoder();
+
+    const firstChunk = await reader.read();
+    const connectedText = decoder.decode(firstChunk.value);
+    expect(connectedText).toContain('event: connected');
+
+    // Ingest using SIMULATION credential
+    const simIngest = await fetch(`${srv.baseUrl}/api/v1/telemetry/ingest`, {
+      method: 'POST',
+      headers: {
+        'X-Edge-Credential-Id': 'edge_sim1',
+        'X-Edge-Secret': 'sim-secret',
+        'Idempotency-Key': 'sim-sse-batch-1',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        plantCode: 'CENTRAL_PLANT_01',
+        edgeDeviceId: 'gw-central-01',
+        sequenceNumber: 2,
+        payloadVersion: '1.0.0',
+        observedAt: new Date(Date.now() - 500).toISOString(),
+        scenario: 'Peak Cooling',
+        quality: 'GOOD',
+        kpis: {
+          coolingLoadMw: 10.3,
+          totalPowerMw: 2.3,
+          systemCop: 4.48,
+          wetBulbC: 28.4,
+          chwSupplyC: 7.0,
+          chwReturnC: 12.6,
+          deltaTK: 5.6,
+          cwSupplyC: 32.8,
+          towerApproachK: 4.4,
+          chillersOn: 3,
+        },
+        devices: [{ id: 'ch-1', status: 'RUNNING', loadPct: 95, metrics: { Load: 95 } }],
+      }),
+    });
+    expect(simIngest.status).toBe(200);
+    const simJson = (await simIngest.json()) as { isSimulated: boolean; sourceType: string };
+    expect(simJson.isSimulated).toBe(true);
+    expect(simJson.sourceType).toBe('SIMULATION');
+
+    const tickChunk = await reader.read();
+    const tickText = decoder.decode(tickChunk.value);
+    expect(tickText).toContain('event: telemetry_tick');
+    expect(tickText).toContain('"isSimulated":true');
+    expect(tickText).toContain('"sourceType":"SIMULATION"');
+
+    streamController.abort();
+
+    // Snapshot also reflects SIMULATION provenance
+    const snap = await fetch(`${srv.baseUrl}/api/v1/plants/CENTRAL_PLANT_01/snapshot`, {
+      headers: { Authorization: 'Bearer viewer-plant1' },
+    });
+    const snapJson = (await snap.json()) as { plant: { isSimulated: boolean; sourceType: string } };
+    expect(snapJson.plant.isSimulated).toBe(true);
+    expect(snapJson.plant.sourceType).toBe('SIMULATION');
   });
 
   it('returns uniform sanitized 404 and 500 JSON responses without leaking internal details', async () => {

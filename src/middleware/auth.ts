@@ -7,7 +7,7 @@ import { getOrCreateUser } from '../db/users.ts';
 import { verifyEdgeSecret } from '../lib/edgeCrypto.ts';
 import { adminAuth } from '../lib/firebase-admin.ts';
 import { logEvent } from '../lib/logger.ts';
-import type { UserRole } from '../types/plant.ts';
+import type { EdgeCredentialType, UserRole } from '../types/plant.ts';
 import { plantCodeSchema } from '../validation/telemetrySchemas.ts';
 import type { ContextualRequest } from './security.ts';
 
@@ -27,6 +27,7 @@ export interface AuthRequest extends ContextualRequest {
     credentialId: string;
     edgeDeviceId: string;
     plantId: number;
+    credentialType: EdgeCredentialType;
   };
 }
 
@@ -283,6 +284,7 @@ export const requireEdgeAuth = async (
       credentialId: cred.credentialId,
       edgeDeviceId: cred.edgeDeviceId,
       plantId: cred.plantId,
+      credentialType: cred.credentialType,
     };
     req.authorizedPlant = plant;
     next();

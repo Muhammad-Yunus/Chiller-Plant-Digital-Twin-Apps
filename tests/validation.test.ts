@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { buildSimulatedTelemetryBatch, type SimulatorMode } from '../src/scripts/edgeSimulator.ts';
 import {
   edgeCredentialCreateSchema,
   memberAssignSchema,
@@ -105,6 +106,14 @@ describe('telemetryIngestSchema validation', () => {
     ).toBe(true);
 
     expect(
+      edgeCredentialCreateSchema.safeParse({
+        edgeDeviceId: 'gw-sim-01',
+        label: 'Edge Simulator',
+        credentialType: 'SIMULATION',
+      }).success,
+    ).toBe(true);
+
+    expect(
       memberAssignSchema.safeParse({
         email: 'operator@example.com',
         role: 'OPERATOR',
@@ -117,5 +126,41 @@ describe('telemetryIngestSchema validation', () => {
         role: 'SUPERADMIN',
       }).success,
     ).toBe(false);
+  });
+
+  it('builds deterministic schema-valid 19-device simulator payloads across all 4 modes', () => {
+    const fixedTime = new Date('2026-11-21T12:00:00.000Z');
+    const modes: SimulatorMode[] = ['steady', 'peak', 'part-load', 'high-wet-bulb'];
+    for (const mode of modes) {
+      const batch = buildSimulatedTelemetryBatch({
+        plantCode: 'CENTRAL_PLANT_01',
+        edgeDeviceId: 'gw-sim-01',
+        sequenceNumber: Math.floor(Date.now() / 1000),
+        mode,
+        seed: 1337,
+        observedAt: fixedTime,
+      });
+      expect(batch.devices).toHaveLength(19);
+      const parsed = telemetryIngestSchema.safeParse(batch);
+      expect(parsed.success).toBe(true);
+    }
+
+    const a = buildSimulatedTelemetryBatch({
+      plantCode: 'CENTRAL_PLANT_01',
+      edgeDeviceId: 'gw-sim-01',
+      sequenceNumber: 10,
+      mode: 'peak',
+      seed: 99,
+      observedAt: fixedTime,
+    });
+    const b = buildSimulatedTelemetryBatch({
+      plantCode: 'CENTRAL_PLANT_01',
+      edgeDeviceId: 'gw-sim-01',
+      sequenceNumber: 10,
+      mode: 'peak',
+      seed: 99,
+      observedAt: fixedTime,
+    });
+    expect(a).toEqual(b);
   });
 });

@@ -1,0 +1,1561 @@
+{
+  "id": "06f2d83f-5ba9-4f85-a2c7-b4970f95b230",
+  "prevId": "546d6ded-71f8-4959-ad80-05d4b34a0f23",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.device_current_states": {
+      "name": "device_current_states",
+      "schema": "",
+      "columns": {
+        "device_id": {
+          "name": "device_id",
+          "type": "varchar(64)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "plant_id": {
+          "name": "plant_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "device_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'STANDBY'"
+        },
+        "quality": {
+          "name": "quality",
+          "type": "data_quality",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'GOOD'"
+        },
+        "load_pct": {
+          "name": "load_pct",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "run_hours": {
+          "name": "run_hours",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "live_metrics": {
+          "name": "live_metrics",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "source_timestamp": {
+          "name": "source_timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_sequence_number": {
+          "name": "last_sequence_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "edge_device_id": {
+          "name": "edge_device_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payload_version": {
+          "name": "payload_version",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_simulated": {
+          "name": "is_simulated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "source_type": {
+          "name": "source_type",
+          "type": "data_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'EDGE'"
+        }
+      },
+      "indexes": {
+        "idx_device_current_plant_ts": {
+          "name": "idx_device_current_plant_ts",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_timestamp",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "device_current_states_device_id_plant_devices_id_fk": {
+          "name": "device_current_states_device_id_plant_devices_id_fk",
+          "tableFrom": "device_current_states",
+          "tableTo": "plant_devices",
+          "columnsFrom": [
+            "device_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "device_current_states_plant_id_plants_id_fk": {
+          "name": "device_current_states_plant_id_plants_id_fk",
+          "tableFrom": "device_current_states",
+          "tableTo": "plants",
+          "columnsFrom": [
+            "plant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.device_telemetry_samples": {
+      "name": "device_telemetry_samples",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "plant_id": {
+          "name": "plant_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_timestamp": {
+          "name": "source_timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "quality": {
+          "name": "quality",
+          "type": "data_quality",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'GOOD'"
+        },
+        "sequence_number": {
+          "name": "sequence_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "edge_device_id": {
+          "name": "edge_device_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payload_version": {
+          "name": "payload_version",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_simulated": {
+          "name": "is_simulated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "source_type": {
+          "name": "source_type",
+          "type": "data_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'EDGE'"
+        },
+        "status": {
+          "name": "status",
+          "type": "device_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "load_pct": {
+          "name": "load_pct",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "power_kw": {
+          "name": "power_kw",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "capacity_kw": {
+          "name": "capacity_kw",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cop": {
+          "name": "cop",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "chw_out_c": {
+          "name": "chw_out_c",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "chw_in_c": {
+          "name": "chw_in_c",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cw_in_c": {
+          "name": "cw_in_c",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cw_out_c": {
+          "name": "cw_out_c",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "flow_m3h": {
+          "name": "flow_m3h",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_metrics": {
+          "name": "extra_metrics",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        }
+      },
+      "indexes": {
+        "idx_dev_telemetry_plant_device_time": {
+          "name": "idx_dev_telemetry_plant_device_time",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_timestamp",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_dev_telemetry_device_time": {
+          "name": "idx_dev_telemetry_device_time",
+          "columns": [
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "recorded_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "device_telemetry_samples_plant_id_plants_id_fk": {
+          "name": "device_telemetry_samples_plant_id_plants_id_fk",
+          "tableFrom": "device_telemetry_samples",
+          "tableTo": "plants",
+          "columnsFrom": [
+            "plant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "device_telemetry_samples_device_id_plant_devices_id_fk": {
+          "name": "device_telemetry_samples_device_id_plant_devices_id_fk",
+          "tableFrom": "device_telemetry_samples",
+          "tableTo": "plant_devices",
+          "columnsFrom": [
+            "device_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.edge_credentials": {
+      "name": "edge_credentials",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plant_id": {
+          "name": "plant_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_device_id": {
+          "name": "edge_device_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_hash": {
+          "name": "secret_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_salt": {
+          "name": "secret_salt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "credential_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ACTIVE'"
+        },
+        "credential_type": {
+          "name": "credential_type",
+          "type": "credential_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'EDGE'"
+        },
+        "last_used_at": {
+          "name": "last_used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rotated_at": {
+          "name": "rotated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_edge_credentials_plant": {
+          "name": "idx_edge_credentials_plant",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "edge_credentials_plant_id_plants_id_fk": {
+          "name": "edge_credentials_plant_id_plants_id_fk",
+          "tableFrom": "edge_credentials",
+          "tableTo": "plants",
+          "columnsFrom": [
+            "plant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "edge_credentials_credential_id_unique": {
+          "name": "edge_credentials_credential_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "credential_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.plant_alarms": {
+      "name": "plant_alarms",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "plant_id": {
+          "name": "plant_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_occurred_at": {
+          "name": "last_occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "severity": {
+          "name": "severity",
+          "type": "alarm_severity",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'INFO'"
+        },
+        "state": {
+          "name": "state",
+          "type": "alarm_state",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ACTIVE'"
+        },
+        "source_type": {
+          "name": "source_type",
+          "type": "alarm_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'EDGE'"
+        },
+        "dedupe_key": {
+          "name": "dedupe_key",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "occurrence_count": {
+          "name": "occurrence_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "message": {
+          "name": "message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "acknowledged_at": {
+          "name": "acknowledged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acknowledged_by": {
+          "name": "acknowledged_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cleared_at": {
+          "name": "cleared_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cleared_by": {
+          "name": "cleared_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_plant_alarms_occurred": {
+          "name": "idx_plant_alarms_occurred",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_plant_alarms_dedupe": {
+          "name": "idx_plant_alarms_dedupe",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "dedupe_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plant_alarms_plant_id_plants_id_fk": {
+          "name": "plant_alarms_plant_id_plants_id_fk",
+          "tableFrom": "plant_alarms",
+          "tableTo": "plants",
+          "columnsFrom": [
+            "plant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plant_alarms_device_id_plant_devices_id_fk": {
+          "name": "plant_alarms_device_id_plant_devices_id_fk",
+          "tableFrom": "plant_alarms",
+          "tableTo": "plant_devices",
+          "columnsFrom": [
+            "device_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.plant_devices": {
+      "name": "plant_devices",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(64)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "plant_id": {
+          "name": "plant_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_key": {
+          "name": "device_key",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "code": {
+          "name": "code",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "category": {
+          "name": "category",
+          "type": "device_category",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mesh_key": {
+          "name": "mesh_key",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "design_specs": {
+          "name": "design_specs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_plant_devices_plant_key": {
+          "name": "uq_plant_devices_plant_key",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_plant_devices_plant_code": {
+          "name": "uq_plant_devices_plant_code",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_plant_devices_plant_cat": {
+          "name": "idx_plant_devices_plant_cat",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "category",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sort_order",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plant_devices_plant_id_plants_id_fk": {
+          "name": "plant_devices_plant_id_plants_id_fk",
+          "tableFrom": "plant_devices",
+          "tableTo": "plants",
+          "columnsFrom": [
+            "plant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.plant_kpi_snapshots": {
+      "name": "plant_kpi_snapshots",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "plant_id": {
+          "name": "plant_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_timestamp": {
+          "name": "source_timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "quality": {
+          "name": "quality",
+          "type": "data_quality",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'GOOD'"
+        },
+        "sequence_number": {
+          "name": "sequence_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "edge_device_id": {
+          "name": "edge_device_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payload_version": {
+          "name": "payload_version",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_simulated": {
+          "name": "is_simulated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "source_type": {
+          "name": "source_type",
+          "type": "data_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'EDGE'"
+        },
+        "scenario": {
+          "name": "scenario",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'Steady State'"
+        },
+        "cooling_load_mw": {
+          "name": "cooling_load_mw",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_power_mw": {
+          "name": "total_power_mw",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "system_cop": {
+          "name": "system_cop",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "wet_bulb_c": {
+          "name": "wet_bulb_c",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chw_supply_c": {
+          "name": "chw_supply_c",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chw_return_c": {
+          "name": "chw_return_c",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delta_t_k": {
+          "name": "delta_t_k",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cw_supply_c": {
+          "name": "cw_supply_c",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tower_approach_k": {
+          "name": "tower_approach_k",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chillers_on": {
+          "name": "chillers_on",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idx_plant_kpi_plant_time": {
+          "name": "idx_plant_kpi_plant_time",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_timestamp",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plant_kpi_snapshots_plant_id_plants_id_fk": {
+          "name": "plant_kpi_snapshots_plant_id_plants_id_fk",
+          "tableFrom": "plant_kpi_snapshots",
+          "tableTo": "plants",
+          "columnsFrom": [
+            "plant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.plants": {
+      "name": "plants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "code": {
+          "name": "code",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'Asia/Jakarta'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "plants_code_unique": {
+          "name": "plants_code_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "code"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.telemetry_batches": {
+      "name": "telemetry_batches",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "plant_id": {
+          "name": "plant_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_device_id": {
+          "name": "edge_device_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence_number": {
+          "name": "sequence_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_version": {
+          "name": "payload_version",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_timestamp": {
+          "name": "source_timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "sample_count": {
+          "name": "sample_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_hash": {
+          "name": "payload_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_type": {
+          "name": "source_type",
+          "type": "data_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'EDGE'"
+        },
+        "raw_payload": {
+          "name": "raw_payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        }
+      },
+      "indexes": {
+        "uq_telemetry_batches_idem": {
+          "name": "uq_telemetry_batches_idem",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "edge_device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_telemetry_batches_plant_time": {
+          "name": "idx_telemetry_batches_plant_time",
+          "columns": [
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "received_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "telemetry_batches_plant_id_plants_id_fk": {
+          "name": "telemetry_batches_plant_id_plants_id_fk",
+          "tableFrom": "telemetry_batches",
+          "tableTo": "plants",
+          "columnsFrom": [
+            "plant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.user_plant_roles": {
+      "name": "user_plant_roles",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plant_id": {
+          "name": "plant_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "user_role",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'VIEWER'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_user_plant_role": {
+          "name": "uq_user_plant_role",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "plant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "user_plant_roles_user_id_users_id_fk": {
+          "name": "user_plant_roles_user_id_users_id_fk",
+          "tableFrom": "user_plant_roles",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "user_plant_roles_plant_id_plants_id_fk": {
+          "name": "user_plant_roles_plant_id_plants_id_fk",
+          "tableFrom": "user_plant_roles",
+          "tableTo": "plants",
+          "columnsFrom": [
+            "plant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.users": {
+      "name": "users",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "uid": {
+          "name": "uid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "users_uid_unique": {
+          "name": "users_uid_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "uid"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.alarm_severity": {
+      "name": "alarm_severity",
+      "schema": "public",
+      "values": [
+        "INFO",
+        "WARN",
+        "CRIT"
+      ]
+    },
+    "public.alarm_source": {
+      "name": "alarm_source",
+      "schema": "public",
+      "values": [
+        "EDGE",
+        "SYSTEM",
+        "SIMULATION"
+      ]
+    },
+    "public.alarm_state": {
+      "name": "alarm_state",
+      "schema": "public",
+      "values": [
+        "ACTIVE",
+        "ACKNOWLEDGED",
+        "CLEARED"
+      ]
+    },
+    "public.credential_status": {
+      "name": "credential_status",
+      "schema": "public",
+      "values": [
+        "ACTIVE",
+        "ROTATED",
+        "REVOKED"
+      ]
+    },
+    "public.credential_type": {
+      "name": "credential_type",
+      "schema": "public",
+      "values": [
+        "EDGE",
+        "SIMULATION"
+      ]
+    },
+    "public.data_quality": {
+      "name": "data_quality",
+      "schema": "public",
+      "values": [
+        "GOOD",
+        "UNCERTAIN",
+        "BAD",
+        "STALE"
+      ]
+    },
+    "public.data_source": {
+      "name": "data_source",
+      "schema": "public",
+      "values": [
+        "EDGE",
+        "SIMULATION",
+        "SEED"
+      ]
+    },
+    "public.device_category": {
+      "name": "device_category",
+      "schema": "public",
+      "values": [
+        "Chiller",
+        "CHW Pump",
+        "CW Pump",
+        "Cooling Tower",
+        "Aux Equipment",
+        "Valves"
+      ]
+    },
+    "public.device_status": {
+      "name": "device_status",
+      "schema": "public",
+      "values": [
+        "RUNNING",
+        "STANDBY",
+        "ISOLATED"
+      ]
+    },
+    "public.user_role": {
+      "name": "user_role",
+      "schema": "public",
+      "values": [
+        "VIEWER",
+        "OPERATOR",
+        "ADMIN"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}
