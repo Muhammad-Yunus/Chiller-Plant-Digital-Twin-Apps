@@ -1,0 +1,6 @@
+{
+  "name": "Chiller Plant Twin",
+  "description": "Interactive 3D Central Chiller Plant Digital Twin dashboard with live HVAC telemetry, device hierarchy, layer visibility controls, and real-time trend monitoring.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

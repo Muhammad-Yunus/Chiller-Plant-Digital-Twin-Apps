@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #050b14;
+    font-family: var(--font-sans);
+    color: #e2e8f0;
+  }
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Signature HUD Panel with Crisp L-Shaped Cyan Corner Brackets */
+.hud-panel {
+  position: relative;
+  background: rgba(7, 15, 27, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  box-shadow: inset 0 0 24px rgba(14, 165, 233, 0.04);
+}
+
+.hud-panel::before,
+.hud-panel::after,
+.hud-panel > .hud-corners::before,
+.hud-panel > .hud-corners::after {
+  content: '';
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Top-left */
+.hud-panel::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1.5px solid #38bdf8;
+  border-left: 1.5px solid #38bdf8;
+}
+
+/* Top-right */
+.hud-panel::after {
+  top: -1px;
+  right: -1px;
+  border-top: 1.5px solid #38bdf8;
+  border-right: 1.5px solid #38bdf8;
+}
+
+/* Bottom-left */
+.hud-panel > .hud-corners::before {
+  bottom: -1px;
+  left: -1px;
+  border-bottom: 1.5px solid #38bdf8;
+  border-left: 1.5px solid #38bdf8;
+}
+
+/* Bottom-right */
+.hud-panel > .hud-corners::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 1.5px solid #38bdf8;
+  border-right: 1.5px solid #38bdf8;
+}
+
+/* KPI Card subtle corner ticks */
+.kpi-card {
+  position: relative;
+  background: rgba(9, 19, 34, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+.kpi-card::before,
+.kpi-card::after {
+  content: '';
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  pointer-events: none;
+}
+
+.kpi-card::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1.5px solid #38bdf8;
+  border-left: 1.5px solid #38bdf8;
+}
+
+.kpi-card::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 1.5px solid #38bdf8;
+  border-right: 1.5px solid #38bdf8;
+}
+
+/* Custom slim industrial scrollbar */
+.hud-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.hud-scroll::-webkit-scrollbar-track {
+  background: rgba(7, 15, 27, 0.4);
+}
+
+.hud-scroll::-webkit-scrollbar-thumb {
+  background: rgba(56, 189, 248, 0.25);
+  border-radius: 2px;
+}
+
+.hud-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.45);
+}
+
+/* Custom Range Slider for Explode Control */
+input[type='range'].hud-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: rgba(56, 189, 248, 0.25);
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range'].hud-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #38bdf8;
+  border: 2px solid #061220;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.8);
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+
+input[type='range'].hud-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+input[type='range'].hud-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #38bdf8;
+  border: 2px solid #061220;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.8);
+  cursor: pointer;
+}
