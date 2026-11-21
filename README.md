@@ -10,6 +10,10 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4.3-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Vite](https://img.shields.io/badge/Vite-8.3-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 
+<br />
+
+<img src="docs/dashboard-preview.png" alt="Chiller Plant Twin 3D Dashboard" width="100%" />
+
 </div>
 
 ---
@@ -78,6 +82,8 @@ flowchart LR
 ├── package.json                    # Dependencies and npm scripts
 ├── tsconfig.json                   # TypeScript configuration
 ├── vite.config.ts                  # Vite + React + Tailwind v4 configuration
+├── docs
+│   └── dashboard-preview.png       # Dashboard UI & 3D viewport preview screenshot
 └── src
     ├── main.tsx                    # React 19 root mount
     ├── index.css                   # Tailwind v4 import, HUD corner-bracket styles, custom slider & scrollbars
