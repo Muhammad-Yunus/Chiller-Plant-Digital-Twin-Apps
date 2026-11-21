@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
 import {
   Activity,
   Bell,
@@ -9,7 +10,10 @@ import {
   Cpu,
   Layers,
   ListTree,
+  LogIn,
+  LogOut,
 } from 'lucide-react';
+import { auth, googleAuthProvider } from './lib/firebase';
 import { TrendsChart } from './components/TrendsChart';
 import {
   createInitialDeviceGroups,
@@ -101,6 +105,11 @@ export function App() {
   const [projectedLabels, setProjectedLabels] = useState<ProjectedLabel[]>([]);
   const [fps, setFps] = useState<number>(60);
 
+  // Firebase Auth state (token kept strictly in memory)
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const idTokenRef = useRef<string | null>(null);
+  const syncTickCountRef = useRef<number>(0);
+
   const allDevices = useMemo(
     () => deviceGroups.flatMap((g) => g.devices),
     [deviceGroups],
@@ -172,6 +181,88 @@ export function App() {
   useEffect(() => {
     sceneRef.current?.setShowLabels(showLabels);
   }, [showLabels]);
+
+  // Listen to Firebase Auth state & hydrate persisted plant snapshot on sign-in
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (!user) {
+        idTokenRef.current = null;
+        return;
+      }
+
+      try {
+        const token = await user.getIdToken();
+        idTokenRef.current = token;
+
+        const res = await fetch('/api/v1/plants/CENTRAL_PLANT_01/snapshot', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+
+        const snapshot = (await res.json()) as {
+          plant?: { scenario?: ScenarioId };
+          kpis?: PlantKpis;
+          deviceGroups?: DeviceGroup[];
+          alarms?: AlarmEntry[];
+          trends?: TrendPoint[];
+        };
+        if (snapshot.kpis) setKpis(snapshot.kpis);
+        if (snapshot.deviceGroups?.length) setDeviceGroups(snapshot.deviceGroups);
+        if (snapshot.alarms?.length) setAlarms(snapshot.alarms);
+        if (snapshot.trends?.length) setTrends(snapshot.trends);
+        if (snapshot.plant?.scenario) setScenario(snapshot.plant.scenario);
+      } catch (err) {
+        console.error('Snapshot hydration failed:', err);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const latestStateRef = useRef({ kpis, scenario, deviceGroups });
+  latestStateRef.current = { kpis, scenario, deviceGroups };
+
+  const persistTelemetry = useCallback(
+    async (newAlarm?: { severity: 'INFO' | 'WARN' | 'CRIT'; message: string; source: string }) => {
+      const user = auth.currentUser;
+      if (!user) return;
+      try {
+        const token = await user.getIdToken();
+        idTokenRef.current = token;
+        const { kpis: curKpis, scenario: curScenario, deviceGroups: curGroups } =
+          latestStateRef.current;
+
+        const devicesPayload = curGroups
+          .flatMap((g) => g.devices)
+          .slice(0, 11)
+          .map((d) => ({
+            id: d.id,
+            status: d.status,
+            loadPct: d.loadPct,
+            metrics: Object.fromEntries(d.liveParams.map((p) => [p.label, p.value])),
+          }));
+
+        await fetch('/api/v1/telemetry/ingest', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            plantCode: 'CENTRAL_PLANT_01',
+            scenario: curScenario,
+            kpis: curKpis,
+            devices: devicesPayload,
+            newAlarm,
+          }),
+        });
+      } catch (err) {
+        console.error('Telemetry sync error:', err);
+      }
+    },
+    [],
+  );
 
   // Live Thermodynamic Simulation Tick (1 Hz real-time scaled by multiplier)
   useEffect(() => {
@@ -317,10 +408,14 @@ export function App() {
           return group;
         }),
       );
+      syncTickCountRef.current += 1;
+      if (syncTickCountRef.current % 5 === 0 && idTokenRef.current) {
+        void persistTelemetry();
+      }
     }, intervalMs);
 
     return () => window.clearInterval(timer);
-  }, [isRunning, speedMultiplier, scenario]);
+  }, [isRunning, speedMultiplier, scenario, persistTelemetry]);
 
   const toggleCategory = useCallback((cat: DeviceCategory) => {
     setExpandedCategories((prev) => ({ ...prev, [cat]: !prev[cat] }));
@@ -359,19 +454,38 @@ export function App() {
       setScenario(nextScenario);
       setScenarioOpen(false);
       const target = SCENARIO_TARGETS[nextScenario];
+      const msg = `Scenario set: ${nextScenario} (${target.chillersOn} chillers)`;
+      const severity = nextScenario === 'High Wet Bulb' ? 'WARN' : 'INFO';
       setAlarms((prev) => [
         {
           id: `alm-${Date.now()}`,
           timestamp: formatClock(simSeconds),
-          severity: nextScenario === 'High Wet Bulb' ? 'WARN' : 'INFO',
-          message: `Scenario set: ${nextScenario} (${target.chillersOn} chillers)`,
+          severity,
+          message: msg,
           source: 'Control Panel',
         },
         ...prev.slice(0, 14),
       ]);
+      void persistTelemetry({
+        severity,
+        message: msg,
+        source: 'Control Panel',
+      });
     },
-    [simSeconds],
+    [simSeconds, persistTelemetry],
   );
+
+  const handleAuthAction = useCallback(async () => {
+    try {
+      if (currentUser) {
+        await signOut(auth);
+      } else {
+        await signInWithPopup(auth, googleAuthProvider);
+      }
+    } catch (err) {
+      console.error('Authentication action failed:', err);
+    }
+  }, [currentUser]);
 
   // Extract latest trend values for selected device or plant
   const latestTrend = trends[trends.length - 1] ?? {
@@ -485,6 +599,27 @@ export function App() {
               );
             })}
           </div>
+
+          <button
+            type="button"
+            onClick={handleAuthAction}
+            className="flex items-center gap-1.5 px-2.5 py-1 border border-sky-500/25 bg-[#081220] hover:border-sky-400/60 hover:text-white text-[10.5px] font-medium text-slate-300 rounded-[2px] transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            title={currentUser ? currentUser.email ?? 'Signed in' : 'Sign in with Google'}
+          >
+            {currentUser ? (
+              <>
+                <LogOut className="w-3 h-3 text-[#38bdf8]" />
+                <span className="max-w-[110px] truncate">
+                  {currentUser.displayName || currentUser.email || 'Sign out'}
+                </span>
+              </>
+            ) : (
+              <>
+                <LogIn className="w-3 h-3 text-[#38bdf8]" />
+                <span>Sign in</span>
+              </>
+            )}
+          </button>
         </div>
       </header>
 
