@@ -21,6 +21,8 @@ if (!password) {
   throw new Error('SQL_ADMIN_PASSWORD must be set in environment variables.');
 }
 
+const useSsl = process.env.SQL_SSL === 'true';
+
 export default defineConfig({
   schema: './src/db/schema.ts',
   out: './drizzle',
@@ -28,10 +30,13 @@ export default defineConfig({
   schemaFilter: ['public'],
   dbCredentials: {
     host: sqlHost,
+    port: process.env.SQL_PORT ? Number(process.env.SQL_PORT) : undefined,
     user,
     password,
     database: sqlDbName,
-    ssl: false,
+    ssl: useSsl
+      ? { rejectUnauthorized: process.env.SQL_SSL_REJECT_UNAUTHORIZED !== 'false' }
+      : false,
   },
   verbose: true,
 });

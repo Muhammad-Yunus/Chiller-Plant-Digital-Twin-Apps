@@ -8,6 +8,18 @@ export type DeviceCategory =
 
 export type DeviceStatus = 'RUNNING' | 'STANDBY' | 'ISOLATED';
 
+export type DataQuality = 'GOOD' | 'UNCERTAIN' | 'BAD' | 'STALE';
+
+export type DataMode = 'live' | 'simulated';
+
+export type FreshnessStatus = 'LIVE' | 'SIMULATED' | 'STALE' | 'OFFLINE';
+
+export type AlarmState = 'ACTIVE' | 'ACKNOWLEDGED' | 'CLEARED';
+
+export type AlarmSourceType = 'EDGE' | 'SYSTEM' | 'SIMULATION';
+
+export type UserRole = 'VIEWER' | 'OPERATOR' | 'ADMIN';
+
 export interface DeviceParameterRow {
   label: string;
   value: string;
@@ -17,12 +29,17 @@ export interface DeviceParameterRow {
 
 export interface PlantDevice {
   id: string;
+  deviceKey?: string;
   code: string;
   name: string;
   category: DeviceCategory;
   status: DeviceStatus;
+  quality?: DataQuality;
   loadPct: number;
   meshKey: string;
+  sourceTimestamp?: string;
+  receivedAt?: string;
+  lastSequenceNumber?: number;
   liveParams: DeviceParameterRow[];
   designParams: DeviceParameterRow[];
 }
@@ -48,18 +65,27 @@ export type LayerKey = keyof LayerState;
 
 export interface AlarmEntry {
   id: string;
+  numericId?: number;
   timestamp: string;
-  severity: 'INFO' | 'WARN';
+  occurredAt?: string;
+  severity: 'INFO' | 'WARN' | 'CRIT';
+  state?: AlarmState;
+  sourceType?: AlarmSourceType;
+  occurrenceCount?: number;
   message: string;
   source: string;
+  acknowledgedAt?: string | null;
+  acknowledgedBy?: string | null;
+  clearedAt?: string | null;
 }
 
 export interface TrendPoint {
   timeSec: number;
-  loadPct: number; // 0-100
-  cop: number; // e.g. 4.0 - 7.0
-  chwOut: number; // °C
-  cwIn: number; // °C
+  recordedAt?: string;
+  loadPct: number;
+  cop: number;
+  chwOut: number;
+  cwIn: number;
 }
 
 export type CameraPreset = 'Iso' | 'Top' | 'Front';
@@ -89,4 +115,22 @@ export interface ProjectedLabel {
   x: number;
   y: number;
   visible: boolean;
+}
+
+export interface PlantSnapshotResponse {
+  plant: {
+    id: number;
+    code: string;
+    name: string;
+    scenario: ScenarioId;
+    role: UserRole;
+    observedAt: string | null;
+    receivedAt: string | null;
+    quality: DataQuality;
+    staleAfterSec: number;
+  };
+  kpis: PlantKpis;
+  deviceGroups: DeviceGroup[];
+  alarms: AlarmEntry[];
+  trends: TrendPoint[];
 }

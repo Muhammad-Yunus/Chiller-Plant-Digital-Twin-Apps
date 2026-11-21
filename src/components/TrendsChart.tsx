@@ -7,6 +7,8 @@ interface TrendsChartProps {
   currentCop: string;
   currentChwOut: string;
   currentCwIn: string;
+  loading?: boolean;
+  emptyMessage?: string;
 }
 
 const CHART_W = 228;
@@ -61,6 +63,8 @@ export const TrendsChart: React.FC<TrendsChartProps> = ({
   currentCop,
   currentChwOut,
   currentCwIn,
+  loading = false,
+  emptyMessage,
 }) => {
   const maxSlots = 300; // 5 minutes at 1 Hz
 
@@ -74,6 +78,22 @@ export const TrendsChart: React.FC<TrendsChartProps> = ({
   }, [points]);
 
   const yTicks = [100, 75, 50, 25, 0];
+
+  if (loading && points.length === 0) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center text-[11px] font-mono-tabular text-slate-400">
+        Loading device trend history...
+      </div>
+    );
+  }
+
+  if (!loading && points.length === 0) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center text-center px-2 text-[11px] text-slate-400">
+        {emptyMessage ?? 'No telemetry samples recorded for this unit yet.'}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full justify-between">

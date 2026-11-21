@@ -1,4 +1,4 @@
-import {
+import type {
   AlarmEntry,
   DeviceGroup,
   LayerState,
@@ -6,7 +6,7 @@ import {
   PlantKpis,
   ScenarioId,
   TrendPoint,
-} from '../types/plant';
+} from '../types/plant.ts';
 
 export const INITIAL_LAYER_STATE: LayerState = {
   chillers: true,

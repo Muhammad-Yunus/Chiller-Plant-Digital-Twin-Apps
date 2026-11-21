@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
 import {
   Activity,
+  AlertTriangle,
   Bell,
   Box,
   Check,
@@ -12,8 +13,8 @@ import {
   ListTree,
   LogIn,
   LogOut,
+  RefreshCw,
 } from 'lucide-react';
-import { auth, googleAuthProvider } from './lib/firebase';
 import { TrendsChart } from './components/TrendsChart';
 import {
   createInitialDeviceGroups,
@@ -23,20 +24,29 @@ import {
   INITIAL_LAYER_STATE,
   SCENARIO_TARGETS,
 } from './data/plantData';
+import { auth, googleAuthProvider } from './lib/firebase';
 import { ChillerPlantScene } from './scene/ChillerPlantScene';
 import {
   AlarmEntry,
   CameraPreset,
+  DataMode,
+  DataQuality,
   DeviceCategory,
   DeviceGroup,
+  DeviceStatus,
+  FreshnessStatus,
   LayerKey,
   LayerState,
   PlantDevice,
   PlantKpis,
+  PlantSnapshotResponse,
   ProjectedLabel,
   ScenarioId,
   TrendPoint,
+  UserRole,
 } from './types/plant';
+
+const DEFAULT_PLANT_CODE = 'CENTRAL_PLANT_01';
 
 const LAYER_ITEMS: Array<{ key: LayerKey; label: string }> = [
   { key: 'chillers', label: 'Chillers' },
@@ -56,6 +66,25 @@ const SCENARIOS: ScenarioId[] = [
   'High Wet Bulb',
 ];
 
+interface StreamPayload {
+  type: 'telemetry_tick' | 'alarm_update';
+  plantCode: string;
+  observedAt: string;
+  receivedAt: string;
+  quality: DataQuality;
+  scenario?: ScenarioId;
+  kpis?: PlantKpis;
+  deviceUpdates?: Array<{
+    id: string;
+    status: DeviceStatus;
+    quality: DataQuality;
+    loadPct: number;
+    sourceTimestamp: string;
+    metrics: Record<string, number | string>;
+  }>;
+  alarms?: AlarmEntry[];
+}
+
 function formatClock(totalSeconds: number): string {
   const sec = Math.floor(totalSeconds) % 86400;
   const h = Math.floor(sec / 3600);
@@ -64,9 +93,56 @@ function formatClock(totalSeconds: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function formatIsoClock(iso: string | null): string {
+  if (!iso) return '--:--:--';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '--:--:--';
+  return d.toISOString().slice(11, 19);
+}
+
+function formatAge(ageSec: number): string {
+  if (ageSec < 60) return `${ageSec}s ago`;
+  const mins = Math.floor(ageSec / 60);
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins / 60)}h ago`;
+}
+
+function extractNumericMetric(
+  metrics: Record<string, number | string>,
+  keys: string[],
+  fallback: number,
+): number {
+  for (const key of keys) {
+    const val = metrics[key];
+    if (typeof val === 'number' && Number.isFinite(val)) return val;
+    if (typeof val === 'string') {
+      const parsed = Number(val);
+      if (val !== '' && Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return fallback;
+}
+
 export function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<ChillerPlantScene | null>(null);
+
+  // Explicit separation between live backend telemetry and local simulation demo mode
+  const [dataMode, setDataMode] = useState<DataMode>('simulated');
+  const [plantRole, setPlantRole] = useState<UserRole>('VIEWER');
+  const [observedAt, setObservedAt] = useState<string | null>(null);
+  const [staleAfterSec, setStaleAfterSec] = useState<number>(15);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  // Live backend hydration & stream health state
+  const [snapshotLoading, setSnapshotLoading] = useState<boolean>(false);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [hasLiveHydrated, setHasLiveHydrated] = useState<boolean>(false);
+  const [streamState, setStreamState] = useState<
+    'idle' | 'connecting' | 'connected' | 'reconnecting' | 'offline'
+  >('idle');
+  const [trendsLoading, setTrendsLoading] = useState<boolean>(false);
+  const [refreshNonce, setRefreshNonce] = useState<number>(0);
 
   const [deviceGroups, setDeviceGroups] = useState<DeviceGroup[]>(() =>
     createInitialDeviceGroups(),
@@ -83,14 +159,19 @@ export function App() {
   });
 
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('ch-1');
+  const selectedDeviceIdRef = useRef<string>('ch-1');
+  selectedDeviceIdRef.current = selectedDeviceId;
+
   const [layers, setLayers] = useState<LayerState>(INITIAL_LAYER_STATE);
-  const [alarms, setAlarms] = useState<AlarmEntry[]>(INITIAL_ALARMS);
+  const [alarms, setAlarms] = useState<AlarmEntry[]>(() =>
+    INITIAL_ALARMS.map((a) => ({ ...a, sourceType: 'SIMULATION', state: 'ACTIVE' })),
+  );
   const [kpis, setKpis] = useState<PlantKpis>(INITIAL_KPIS);
   const [trends, setTrends] = useState<TrendPoint[]>(() =>
     createInitialTrends(),
   );
 
-  // Simulation time starting at 01:58:35 (7115s) to match reference state
+  // Simulation time starting at 01:58:35 (7115s) to match reference state in demo mode
   const [simSeconds, setSimSeconds] = useState<number>(1 * 3600 + 58 * 60 + 35);
   const [isRunning, setIsRunning] = useState<boolean>(true);
   const [speedMultiplier, setSpeedMultiplier] = useState<1 | 10 | 60>(1);
@@ -107,8 +188,8 @@ export function App() {
 
   // Firebase Auth state (token kept strictly in memory)
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const idTokenRef = useRef<string | null>(null);
-  const syncTickCountRef = useRef<number>(0);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const allDevices = useMemo(
     () => deviceGroups.flatMap((g) => g.devices),
@@ -120,6 +201,8 @@ export function App() {
       allDevices.find((d) => d.id === selectedDeviceId) ?? allDevices[0]
     );
   }, [allDevices, selectedDeviceId]);
+
+  const totalDeviceCount = allDevices.length;
 
   // Ref for selecting device from 3D raycasting without recreating WebGL scene
   const handleSelectMeshKeyRef = useRef<(meshKey: string) => void>(() => {});
@@ -165,14 +248,14 @@ export function App() {
     }
   }, [selectedDevice]);
 
-  // Sync simulation state to 3D scene
+  // Sync 3D animation state (live mode keeps fans/flow rotating while data stays backend-driven)
   useEffect(() => {
-    sceneRef.current?.setRunning(isRunning);
-  }, [isRunning]);
+    sceneRef.current?.setRunning(dataMode === 'live' ? true : isRunning);
+  }, [isRunning, dataMode]);
 
   useEffect(() => {
-    sceneRef.current?.setSpeedMultiplier(speedMultiplier);
-  }, [speedMultiplier]);
+    sceneRef.current?.setSpeedMultiplier(dataMode === 'live' ? 1 : speedMultiplier);
+  }, [speedMultiplier, dataMode]);
 
   useEffect(() => {
     sceneRef.current?.setExplodeFactor(explodeFactor);
@@ -182,91 +265,353 @@ export function App() {
     sceneRef.current?.setShowLabels(showLabels);
   }, [showLabels]);
 
-  // Listen to Firebase Auth state & hydrate persisted plant snapshot on sign-in
+  // 1-second clock ticker for freshness age calculation in live mode
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    if (dataMode !== 'live') return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [dataMode]);
+
+  // Listen to Firebase Auth state; automatically enter live mode on sign-in
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
-      if (!user) {
-        idTokenRef.current = null;
-        return;
-      }
-
-      try {
-        const token = await user.getIdToken();
-        idTokenRef.current = token;
-
-        const res = await fetch('/api/v1/plants/CENTRAL_PLANT_01/snapshot', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-
-        const snapshot = (await res.json()) as {
-          plant?: { scenario?: ScenarioId };
-          kpis?: PlantKpis;
-          deviceGroups?: DeviceGroup[];
-          alarms?: AlarmEntry[];
-          trends?: TrendPoint[];
-        };
-        if (snapshot.kpis) setKpis(snapshot.kpis);
-        if (snapshot.deviceGroups?.length) setDeviceGroups(snapshot.deviceGroups);
-        if (snapshot.alarms?.length) setAlarms(snapshot.alarms);
-        if (snapshot.trends?.length) setTrends(snapshot.trends);
-        if (snapshot.plant?.scenario) setScenario(snapshot.plant.scenario);
-      } catch (err) {
-        console.error('Snapshot hydration failed:', err);
+      setAuthReady(true);
+      setAuthError(null);
+      if (user) {
+        setDataMode('live');
+      } else {
+        setHasLiveHydrated(false);
+        setObservedAt(null);
+        setSnapshotError(null);
+        setStreamState('idle');
       }
     });
-
     return () => unsubscribe();
   }, []);
 
-  const latestStateRef = useRef({ kpis, scenario, deviceGroups });
-  latestStateRef.current = { kpis, scenario, deviceGroups };
-
-  const persistTelemetry = useCallback(
-    async (newAlarm?: { severity: 'INFO' | 'WARN' | 'CRIT'; message: string; source: string }) => {
-      const user = auth.currentUser;
-      if (!user) return;
-      try {
-        const token = await user.getIdToken();
-        idTokenRef.current = token;
-        const { kpis: curKpis, scenario: curScenario, deviceGroups: curGroups } =
-          latestStateRef.current;
-
-        const devicesPayload = curGroups
-          .flatMap((g) => g.devices)
-          .slice(0, 11)
-          .map((d) => ({
-            id: d.id,
-            status: d.status,
-            loadPct: d.loadPct,
-            metrics: Object.fromEntries(d.liveParams.map((p) => [p.label, p.value])),
-          }));
-
-        await fetch('/api/v1/telemetry/ingest', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            plantCode: 'CENTRAL_PLANT_01',
-            scenario: curScenario,
-            kpis: curKpis,
-            devices: devicesPayload,
-            newAlarm,
-          }),
-        });
-      } catch (err) {
-        console.error('Telemetry sync error:', err);
+  // Switch between simulated and live baseline cleanly
+  const handleModeChange = useCallback(
+    (nextMode: DataMode) => {
+      setScenarioOpen(false);
+      if (nextMode === dataMode) return;
+      if (nextMode === 'simulated') {
+        setDataMode('simulated');
+        setSnapshotError(null);
+        setStreamState('idle');
+        setDeviceGroups(createInitialDeviceGroups());
+        setKpis(INITIAL_KPIS);
+        setTrends(createInitialTrends());
+        setAlarms(
+          INITIAL_ALARMS.map((a) => ({
+            ...a,
+            sourceType: 'SIMULATION',
+            state: 'ACTIVE',
+          })),
+        );
+        setScenario('Steady State');
+        setObservedAt(null);
+      } else {
+        setHasLiveHydrated(false);
+        setTrends([]);
+        setAlarms([]);
+        setDataMode('live');
+        setRefreshNonce((n) => n + 1);
       }
     },
-    [],
+    [dataMode],
   );
 
-  // Live Thermodynamic Simulation Tick (1 Hz real-time scaled by multiplier)
+  // Hydrate full plant snapshot from backend in LIVE mode
   useEffect(() => {
-    if (!isRunning) return;
+    if (dataMode !== 'live') return;
+    if (!authReady) return;
+    if (!currentUser) {
+      setSnapshotLoading(false);
+      setStreamState('offline');
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+
+    const hydrate = async () => {
+      setSnapshotLoading(true);
+      setSnapshotError(null);
+      try {
+        const token = await currentUser.getIdToken();
+        const res = await fetch(`/api/v1/plants/${DEFAULT_PLANT_CODE}/snapshot`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          let errMsg = `Snapshot request failed (${res.status})`;
+          try {
+            const payload = (await res.json()) as { error?: { message?: string } };
+            if (payload?.error?.message) errMsg = payload.error.message;
+          } catch {
+            // Keep default message
+          }
+          throw new Error(errMsg);
+        }
+
+        const snapshot = (await res.json()) as PlantSnapshotResponse;
+        if (cancelled) return;
+
+        setKpis(snapshot.kpis);
+        setDeviceGroups(snapshot.deviceGroups);
+        setAlarms(snapshot.alarms);
+        setTrends(snapshot.trends);
+        setScenario(snapshot.plant.scenario);
+        setPlantRole(snapshot.plant.role);
+        setObservedAt(snapshot.plant.observedAt);
+        setStaleAfterSec(snapshot.plant.staleAfterSec || 15);
+        setHasLiveHydrated(true);
+        setNowMs(Date.now());
+      } catch (err) {
+        if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) {
+          return;
+        }
+        setSnapshotError(
+          err instanceof Error ? err.message : 'Unable to load live telemetry snapshot',
+        );
+        setHasLiveHydrated(false);
+      } finally {
+        if (!cancelled) setSnapshotLoading(false);
+      }
+    };
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [dataMode, authReady, currentUser, refreshNonce]);
+
+  // Fetch device-specific trends whenever selected device changes in LIVE mode
+  useEffect(() => {
+    if (dataMode !== 'live' || !currentUser || !hasLiveHydrated) return;
+
+    const controller = new AbortController();
+    let cancelled = false;
+
+    const fetchTrends = async () => {
+      setTrendsLoading(true);
+      try {
+        const token = await currentUser.getIdToken();
+        const res = await fetch(
+          `/api/v1/plants/${DEFAULT_PLANT_CODE}/devices/${encodeURIComponent(selectedDeviceId)}/trends?limit=300`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: controller.signal,
+          },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as { points?: TrendPoint[] };
+        if (!cancelled && Array.isArray(data.points)) {
+          setTrends(data.points);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+      } finally {
+        if (!cancelled) setTrendsLoading(false);
+      }
+    };
+
+    void fetchTrends();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [dataMode, currentUser, hasLiveHydrated, selectedDeviceId]);
+
+  // Real-time SSE connection with Authorization Bearer header & exponential backoff
+  useEffect(() => {
+    if (dataMode !== 'live' || !currentUser || !hasLiveHydrated) {
+      return;
+    }
+
+    let cancelled = false;
+    let attempt = 0;
+    let reconnectTimer: number | null = null;
+    let activeController: AbortController | null = null;
+
+    const handleStreamEvent = (eventName: string, rawData: string) => {
+      if (eventName === 'connected') {
+        setStreamState('connected');
+        attempt = 0;
+        return;
+      }
+      if (!rawData) return;
+
+      let parsed: StreamPayload;
+      try {
+        parsed = JSON.parse(rawData) as StreamPayload;
+      } catch {
+        return;
+      }
+
+      if (parsed.type === 'telemetry_tick') {
+        setObservedAt(parsed.observedAt);
+        setNowMs(Date.now());
+        if (parsed.scenario) setScenario(parsed.scenario);
+        if (parsed.kpis) setKpis(parsed.kpis);
+
+        if (parsed.deviceUpdates && parsed.deviceUpdates.length > 0) {
+          const updateMap = new Map(parsed.deviceUpdates.map((u) => [u.id, u]));
+          setDeviceGroups((prev) =>
+            prev.map((group) => ({
+              ...group,
+              devices: group.devices.map((dev) => {
+                const upd = updateMap.get(dev.id) ?? updateMap.get(dev.deviceKey ?? '');
+                if (!upd) return dev;
+                return {
+                  ...dev,
+                  status: upd.status,
+                  quality: upd.quality,
+                  loadPct: upd.loadPct,
+                  sourceTimestamp: upd.sourceTimestamp,
+                  liveParams: dev.liveParams.map((p) => {
+                    const nextVal = upd.metrics[p.label];
+                    return nextVal !== undefined
+                      ? { ...p, value: String(nextVal) }
+                      : p;
+                  }),
+                };
+              }),
+            })),
+          );
+
+          const activeDevUpd = updateMap.get(selectedDeviceIdRef.current);
+          if (activeDevUpd) {
+            setTrends((prev) => {
+              const last = prev[prev.length - 1];
+              const nextPt: TrendPoint = {
+                timeSec: (last?.timeSec ?? 0) + 1,
+                recordedAt: activeDevUpd.sourceTimestamp,
+                loadPct: activeDevUpd.loadPct,
+                cop: extractNumericMetric(activeDevUpd.metrics, ['COP', 'cop'], last?.cop ?? 0),
+                chwOut: extractNumericMetric(
+                  activeDevUpd.metrics,
+                  ['CHW Out', 'chwOutC'],
+                  last?.chwOut ?? 0,
+                ),
+                cwIn: extractNumericMetric(
+                  activeDevUpd.metrics,
+                  ['CW In', 'cwInC'],
+                  last?.cwIn ?? 0,
+                ),
+              };
+              const updated = [...prev, nextPt];
+              return updated.length > 300 ? updated.slice(updated.length - 300) : updated;
+            });
+          }
+        }
+
+        if (parsed.alarms && parsed.alarms.length > 0) {
+          setAlarms((prev) => {
+            const incomingIds = new Set(parsed.alarms!.map((a) => a.id));
+            const filtered = prev.filter((a) => !incomingIds.has(a.id));
+            return [...parsed.alarms!, ...filtered].slice(0, 50);
+          });
+        }
+      } else if (parsed.type === 'alarm_update' && parsed.alarms?.length) {
+        setAlarms((prev) => {
+          const map = new Map(parsed.alarms!.map((a) => [a.id, a]));
+          const updated = prev.map((existing) => map.get(existing.id) ?? existing);
+          for (const a of parsed.alarms!) {
+            if (!updated.some((item) => item.id === a.id)) {
+              updated.unshift(a);
+            }
+          }
+          return updated.slice(0, 50);
+        });
+      }
+    };
+
+    const connect = async () => {
+      if (cancelled) return;
+      activeController = new AbortController();
+      setStreamState(attempt === 0 ? 'connecting' : 'reconnecting');
+
+      try {
+        const token = await currentUser.getIdToken();
+        const res = await fetch(`/api/v1/plants/${DEFAULT_PLANT_CODE}/stream`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'text/event-stream',
+          },
+          signal: activeController.signal,
+        });
+
+        if (!res.ok || !res.body) {
+          throw new Error(`Stream connection failed (${res.status})`);
+        }
+
+        setStreamState('connected');
+        attempt = 0;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (!cancelled) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let sepIdx = buffer.indexOf('\n\n');
+          while (sepIdx !== -1) {
+            const block = buffer.slice(0, sepIdx);
+            buffer = buffer.slice(sepIdx + 2);
+
+            let eventName = 'message';
+            const dataLines: string[] = [];
+            for (const line of block.split('\n')) {
+              if (line.startsWith(':')) continue;
+              if (line.startsWith('event:')) {
+                eventName = line.slice(6).trim();
+              } else if (line.startsWith('data:')) {
+                dataLines.push(line.slice(5).trim());
+              }
+            }
+            if (dataLines.length > 0) {
+              handleStreamEvent(eventName, dataLines.join('\n'));
+            }
+
+            sepIdx = buffer.indexOf('\n\n');
+          }
+        }
+
+        if (!cancelled) {
+          throw new Error('Telemetry stream ended unexpectedly');
+        }
+      } catch (err) {
+        if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) {
+          return;
+        }
+        attempt += 1;
+        setStreamState(attempt >= 3 ? 'offline' : 'reconnecting');
+        const delayMs = Math.min(30_000, 1000 * Math.pow(2, Math.min(attempt - 1, 4)));
+        reconnectTimer = window.setTimeout(() => {
+          void connect();
+        }, delayMs);
+      }
+    };
+
+    void connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      activeController?.abort();
+    };
+  }, [dataMode, currentUser, hasLiveHydrated]);
+
+  // Thermodynamic Simulation Tick — strictly active ONLY in explicit 'simulated' demo mode
+  useEffect(() => {
+    if (dataMode !== 'simulated' || !isRunning) return;
 
     const intervalMs = speedMultiplier === 1 ? 1000 : speedMultiplier === 10 ? 300 : 150;
     const stepSimSec = speedMultiplier === 1 ? 1 : speedMultiplier === 10 ? 3 : 9;
@@ -351,7 +696,6 @@ export function App() {
         return updated.length > 300 ? updated.slice(updated.length - 300) : updated;
       });
 
-      // Gently update chiller & pump loads in device tree
       setDeviceGroups((prev) =>
         prev.map((group) => {
           if (group.category === 'Chiller') {
@@ -408,14 +752,10 @@ export function App() {
           return group;
         }),
       );
-      syncTickCountRef.current += 1;
-      if (syncTickCountRef.current % 5 === 0 && idTokenRef.current) {
-        void persistTelemetry();
-      }
     }, intervalMs);
 
     return () => window.clearInterval(timer);
-  }, [isRunning, speedMultiplier, scenario, persistTelemetry]);
+  }, [dataMode, isRunning, speedMultiplier, scenario]);
 
   const toggleCategory = useCallback((cat: DeviceCategory) => {
     setExpandedCategories((prev) => ({ ...prev, [cat]: !prev[cat] }));
@@ -451,49 +791,145 @@ export function App() {
 
   const handleSelectScenario = useCallback(
     (nextScenario: ScenarioId) => {
+      if (dataMode !== 'simulated') return;
       setScenario(nextScenario);
       setScenarioOpen(false);
       const target = SCENARIO_TARGETS[nextScenario];
-      const msg = `Scenario set: ${nextScenario} (${target.chillersOn} chillers)`;
+      const msg = `Demo scenario set: ${nextScenario} (${target.chillersOn} chillers)`;
       const severity = nextScenario === 'High Wet Bulb' ? 'WARN' : 'INFO';
       setAlarms((prev) => [
         {
-          id: `alm-${Date.now()}`,
+          id: `sim-alm-${Date.now()}`,
           timestamp: formatClock(simSeconds),
           severity,
+          state: 'ACTIVE',
+          sourceType: 'SIMULATION',
           message: msg,
-          source: 'Control Panel',
+          source: 'Demo Simulator',
         },
         ...prev.slice(0, 14),
       ]);
-      void persistTelemetry({
-        severity,
-        message: msg,
-        source: 'Control Panel',
-      });
     },
-    [simSeconds, persistTelemetry],
+    [dataMode, simSeconds],
+  );
+
+  const handleAlarmAction = useCallback(
+    async (alarm: AlarmEntry, action: 'acknowledge' | 'clear') => {
+      if (dataMode === 'simulated') {
+        setAlarms((prev) =>
+          prev.map((item) =>
+            item.id === alarm.id
+              ? {
+                  ...item,
+                  state: action === 'acknowledge' ? 'ACKNOWLEDGED' : 'CLEARED',
+                }
+              : item,
+          ),
+        );
+        return;
+      }
+
+      if (!currentUser || !alarm.numericId) return;
+      try {
+        const token = await currentUser.getIdToken();
+        const res = await fetch(
+          `/api/v1/plants/${DEFAULT_PLANT_CODE}/alarms/${alarm.numericId}/${action}`,
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as { alarm?: AlarmEntry };
+        if (data.alarm) {
+          setAlarms((prev) =>
+            prev.map((item) => (item.id === alarm.id ? data.alarm! : item)),
+          );
+        }
+      } catch {
+        // SSE or next retry will keep state aligned
+      }
+    },
+    [dataMode, currentUser],
   );
 
   const handleAuthAction = useCallback(async () => {
+    setAuthError(null);
     try {
       if (currentUser) {
         await signOut(auth);
       } else {
         await signInWithPopup(auth, googleAuthProvider);
       }
-    } catch (err) {
-      console.error('Authentication action failed:', err);
+    } catch {
+      setAuthError('Sign-in popup could not complete. Retry when ready.');
     }
   }, [currentUser]);
 
-  // Extract latest trend values for selected device or plant
+  const handleRetryLive = useCallback(() => {
+    setRefreshNonce((n) => n + 1);
+  }, []);
+
+  // Compute dynamic Freshness Status & age label
+  const { freshnessStatus, observedAgeLabel } = useMemo((): {
+    freshnessStatus: FreshnessStatus;
+    observedAgeLabel: string;
+  } => {
+    if (dataMode === 'simulated') {
+      return { freshnessStatus: 'SIMULATED', observedAgeLabel: 'DEMO TICK' };
+    }
+    if (!currentUser || snapshotError || streamState === 'offline') {
+      return {
+        freshnessStatus: 'OFFLINE',
+        observedAgeLabel: !currentUser ? 'SIGN IN REQUIRED' : 'DISCONNECTED',
+      };
+    }
+    if (!observedAt) {
+      return {
+        freshnessStatus: snapshotLoading ? 'OFFLINE' : 'STALE',
+        observedAgeLabel: snapshotLoading ? 'SYNCING...' : 'NO TELEMETRY',
+      };
+    }
+    const obsMs = Date.parse(observedAt);
+    const ageSec = Number.isFinite(obsMs)
+      ? Math.max(0, Math.floor((nowMs - obsMs) / 1000))
+      : staleAfterSec + 1;
+    const isStale = ageSec > staleAfterSec || streamState === 'reconnecting';
+    return {
+      freshnessStatus: isStale ? 'STALE' : 'LIVE',
+      observedAgeLabel: formatAge(ageSec),
+    };
+  }, [
+    dataMode,
+    currentUser,
+    snapshotError,
+    streamState,
+    observedAt,
+    snapshotLoading,
+    nowMs,
+    staleAfterSec,
+  ]);
+
   const latestTrend = trends[trends.length - 1] ?? {
-    loadPct: 87.4,
-    cop: 6.01,
-    chwOut: 6.9,
-    cwIn: 31.6,
+    loadPct: 0,
+    cop: 0,
+    chwOut: 0,
+    cwIn: 0,
   };
+
+  const isLiveBlocked =
+    dataMode === 'live' && (!currentUser || Boolean(snapshotError) || !hasLiveHydrated);
+  const canOperateAlarms =
+    dataMode === 'simulated' || plantRole === 'OPERATOR' || plantRole === 'ADMIN';
+
+  const statusBadgeClass =
+    freshnessStatus === 'LIVE'
+      ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+      : freshnessStatus === 'STALE'
+        ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+        : freshnessStatus === 'OFFLINE'
+          ? 'border-rose-500/50 bg-rose-500/10 text-rose-300'
+          : 'border-sky-500/35 bg-[#081526] text-sky-300';
 
   return (
     <div className="w-screen h-screen flex flex-col bg-[#050b14] text-slate-200 overflow-hidden">
@@ -512,13 +948,17 @@ export function App() {
           </div>
 
           {/* 4 Top KPI Cards */}
-          <div className="hidden lg:flex items-center gap-2.5">
+          <div
+            className={`hidden lg:flex items-center gap-2.5 transition-opacity ${
+              isLiveBlocked || freshnessStatus === 'STALE' ? 'opacity-65' : 'opacity-100'
+            }`}
+          >
             <div className="kpi-card px-3 py-1 min-w-[138px]">
               <div className="text-[9px] font-semibold tracking-[0.09em] uppercase text-slate-400 leading-none mb-0.5">
                 COOLING LOAD
               </div>
               <div className="font-mono-tabular text-[17px] font-semibold leading-tight text-[#38bdf8]">
-                {kpis.coolingLoadMw.toFixed(2)}
+                {isLiveBlocked ? '—' : kpis.coolingLoadMw.toFixed(2)}
                 <span className="text-[10px] font-normal text-slate-500 ml-1">
                   MW
                 </span>
@@ -530,7 +970,7 @@ export function App() {
                 TOTAL POWER
               </div>
               <div className="font-mono-tabular text-[17px] font-semibold leading-tight text-[#38bdf8]">
-                {kpis.totalPowerMw.toFixed(2)}
+                {isLiveBlocked ? '—' : kpis.totalPowerMw.toFixed(2)}
                 <span className="text-[10px] font-normal text-slate-500 ml-1">
                   MW
                 </span>
@@ -542,7 +982,7 @@ export function App() {
                 SYSTEM COP
               </div>
               <div className="font-mono-tabular text-[17px] font-semibold leading-tight text-[#34d399]">
-                {kpis.systemCop.toFixed(2)}
+                {isLiveBlocked ? '—' : kpis.systemCop.toFixed(2)}
               </div>
             </div>
 
@@ -551,7 +991,7 @@ export function App() {
                 WET BULB
               </div>
               <div className="font-mono-tabular text-[17px] font-semibold leading-tight text-[#c084fc]">
-                {kpis.wetBulbC.toFixed(1)}
+                {isLiveBlocked ? '—' : kpis.wetBulbC.toFixed(1)}
                 <span className="text-[10px] font-normal text-slate-500 ml-1">
                   °C
                 </span>
@@ -560,45 +1000,69 @@ export function App() {
           </div>
         </div>
 
-        {/* Right: Running State, Clock & Speed Multipliers */}
-        <div className="flex items-center gap-4 shrink-0">
-          <button
-            type="button"
-            onClick={() => setIsRunning((r) => !r)}
-            className="flex items-center gap-1.5 text-[10.5px] font-medium tracking-[0.09em] uppercase text-slate-300 hover:text-white transition-colors cursor-pointer"
-            title={isRunning ? 'Pause Simulation' : 'Resume Simulation'}
+        {/* Right: Stream/Sim State, Clock, Speed Multipliers (Demo) & Operator Auth */}
+        <div className="flex items-center gap-3.5 shrink-0">
+          {dataMode === 'simulated' ? (
+            <button
+              type="button"
+              onClick={() => setIsRunning((r) => !r)}
+              className="flex items-center gap-1.5 text-[10.5px] font-medium tracking-[0.09em] uppercase text-slate-300 hover:text-white transition-colors cursor-pointer"
+              title={isRunning ? 'Pause Demo Simulation' : 'Resume Demo Simulation'}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  isRunning ? 'bg-emerald-400' : 'bg-amber-400'
+                }`}
+              />
+              <span>{isRunning ? 'RUNNING' : 'PAUSED'}</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 text-[10.5px] font-medium tracking-[0.09em] uppercase text-slate-300">
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  freshnessStatus === 'LIVE'
+                    ? 'bg-emerald-400'
+                    : freshnessStatus === 'STALE'
+                      ? 'bg-amber-400'
+                      : 'bg-rose-500'
+                }`}
+              />
+              <span>{freshnessStatus}</span>
+            </div>
+          )}
+
+          <div
+            className="font-mono-tabular text-[14.5px] font-semibold tracking-wider text-slate-100"
+            title={
+              dataMode === 'live'
+                ? `Last observed sensor timestamp (UTC): ${observedAt ?? 'none'}`
+                : 'Simulation clock'
+            }
           >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                isRunning ? 'bg-emerald-400' : 'bg-amber-400'
-              }`}
-            />
-            <span>{isRunning ? 'RUNNING' : 'PAUSED'}</span>
-          </button>
-
-          <div className="font-mono-tabular text-[14.5px] font-semibold tracking-wider text-slate-100">
-            {formatClock(simSeconds)}
+            {dataMode === 'live' ? formatIsoClock(observedAt) : formatClock(simSeconds)}
           </div>
 
-          <div className="flex items-center border border-sky-500/25 bg-[#081220] rounded-[2px] overflow-hidden">
-            {([1, 10, 60] as const).map((spd) => {
-              const active = speedMultiplier === spd;
-              return (
-                <button
-                  key={spd}
-                  type="button"
-                  onClick={() => setSpeedMultiplier(spd)}
-                  className={`px-2 py-0.5 text-[11px] font-mono-tabular transition-colors cursor-pointer ${
-                    active
-                      ? 'bg-[#0e4466] text-white font-semibold border-x border-sky-400/40'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-sky-500/10'
-                  }`}
-                >
-                  ×{spd}
-                </button>
-              );
-            })}
-          </div>
+          {dataMode === 'simulated' && (
+            <div className="flex items-center border border-sky-500/25 bg-[#081220] rounded-[2px] overflow-hidden">
+              {([1, 10, 60] as const).map((spd) => {
+                const active = speedMultiplier === spd;
+                return (
+                  <button
+                    key={spd}
+                    type="button"
+                    onClick={() => setSpeedMultiplier(spd)}
+                    className={`px-2 py-0.5 text-[11px] font-mono-tabular transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-[#0e4466] text-white font-semibold border-x border-sky-400/40'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-sky-500/10'
+                    }`}
+                  >
+                    ×{spd}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <button
             type="button"
@@ -651,6 +1115,54 @@ export function App() {
           </div>
         )}
 
+        {/* Non-blocking Live Connection / Error / Retry Banner */}
+        {((dataMode === 'live' && (!currentUser || snapshotError || streamState === 'offline' || streamState === 'reconnecting')) ||
+          authError) && (
+          <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-3 py-1.5 bg-[#0a1526]/95 border border-amber-500/45 rounded-[3px] shadow-xl text-[11px] text-slate-200">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span>
+              {authError
+                ? authError
+                : !currentUser
+                  ? 'Live telemetry requires operator sign-in.'
+                  : snapshotError
+                    ? snapshotError
+                    : streamState === 'offline'
+                      ? 'Live stream disconnected. Readings are not live.'
+                      : 'Reconnecting live telemetry stream...'}
+            </span>
+            {dataMode === 'live' && !currentUser ? (
+              <button
+                type="button"
+                onClick={handleAuthAction}
+                className="px-2 py-0.5 bg-[#0e4466] hover:bg-[#145985] text-white rounded-[2px] text-[10.5px] font-medium cursor-pointer"
+              >
+                Sign in
+              </button>
+            ) : (
+              dataMode === 'live' && (
+                <button
+                  type="button"
+                  onClick={handleRetryLive}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-[#0e4466] hover:bg-[#145985] text-white rounded-[2px] text-[10.5px] font-medium cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Retry</span>
+                </button>
+              )
+            )}
+            {dataMode === 'live' && (
+              <button
+                type="button"
+                onClick={() => handleModeChange('simulated')}
+                className="px-2 py-0.5 border border-sky-500/30 hover:border-sky-400/60 text-slate-300 hover:text-white rounded-[2px] text-[10.5px] cursor-pointer"
+              >
+                Demo Mode
+              </button>
+            )}
+          </div>
+        )}
+
         {/* LEFT SIDEBAR: DEVICE TREE, LAYERS, ALARMS */}
         <aside className="absolute top-2.5 left-2.5 bottom-2.5 w-[262px] z-20 flex flex-col gap-2.5 pointer-events-auto">
           {/* 1. DEVICE TREE */}
@@ -664,70 +1176,76 @@ export function App() {
                 </h2>
               </div>
               <span className="text-[10px] font-mono-tabular text-slate-500">
-                19 units
+                {totalDeviceCount} units
               </span>
             </div>
 
             <div className="flex-1 overflow-y-auto hud-scroll px-1.5 py-1.5 space-y-1">
-              {deviceGroups.map((group) => {
-                const isExpanded = expandedCategories[group.category];
-                return (
-                  <div key={group.category}>
-                    <button
-                      type="button"
-                      onClick={() => toggleCategory(group.category)}
-                      className="w-full flex items-center justify-between px-1.5 py-1 text-[11.5px] text-slate-300 hover:text-white transition-colors cursor-pointer"
-                    >
-                      <span className="flex items-center gap-1.5">
-                        {isExpanded ? (
-                          <ChevronDown className="w-3 h-3 text-slate-400" />
-                        ) : (
-                          <ChevronRight className="w-3 h-3 text-slate-400" />
-                        )}
-                        <span className="w-2 h-[1.5px] bg-[#38bdf8]/80 inline-block" />
-                        <span className="font-medium">{group.category}</span>
-                      </span>
-                      <span className="text-[10px] font-mono-tabular text-slate-500">
-                        {group.displayCount}
-                      </span>
-                    </button>
+              {dataMode === 'live' && snapshotLoading && !hasLiveHydrated ? (
+                <div className="px-2 py-6 text-center text-[11px] font-mono-tabular text-slate-400">
+                  Hydrating plant devices...
+                </div>
+              ) : (
+                deviceGroups.map((group) => {
+                  const isExpanded = expandedCategories[group.category];
+                  return (
+                    <div key={group.category}>
+                      <button
+                        type="button"
+                        onClick={() => toggleCategory(group.category)}
+                        className="w-full flex items-center justify-between px-1.5 py-1 text-[11.5px] text-slate-300 hover:text-white transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          {isExpanded ? (
+                            <ChevronDown className="w-3 h-3 text-slate-400" />
+                          ) : (
+                            <ChevronRight className="w-3 h-3 text-slate-400" />
+                          )}
+                          <span className="w-2 h-[1.5px] bg-[#38bdf8]/80 inline-block" />
+                          <span className="font-medium">{group.category}</span>
+                        </span>
+                        <span className="text-[10px] font-mono-tabular text-slate-500">
+                          {group.displayCount}
+                        </span>
+                      </button>
 
-                    {isExpanded && (
-                      <div className="mt-0.5 space-y-0.5 pl-1">
-                        {group.devices.map((dev) => {
-                          const isSelected = dev.id === selectedDeviceId;
-                          return (
-                            <button
-                              key={dev.id}
-                              type="button"
-                              onClick={() => setSelectedDeviceId(dev.id)}
-                              className={`w-full flex items-center justify-between px-2 py-[4.5px] rounded-[2px] text-[11.5px] transition-colors cursor-pointer ${
-                                isSelected
-                                  ? 'bg-[#0c3148]/80 border border-sky-400/45 text-white'
-                                  : 'border border-transparent text-slate-300 hover:bg-sky-500/10 hover:text-white'
-                              }`}
-                            >
-                              <span className="flex items-center gap-2 truncate">
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                    dev.status === 'RUNNING'
-                                      ? 'bg-emerald-400'
-                                      : 'bg-slate-500'
-                                  }`}
-                                />
-                                <span className="truncate">{dev.name}</span>
-                              </span>
-                              <span className="font-mono-tabular text-[11px] text-slate-400 ml-2 shrink-0">
-                                {Math.round(dev.loadPct)}%
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                      {isExpanded && (
+                        <div className="mt-0.5 space-y-0.5 pl-1">
+                          {group.devices.map((dev) => {
+                            const isSelected = dev.id === selectedDeviceId;
+                            return (
+                              <button
+                                key={dev.id}
+                                type="button"
+                                onClick={() => setSelectedDeviceId(dev.id)}
+                                className={`w-full flex items-center justify-between px-2 py-[4.5px] rounded-[2px] text-[11.5px] transition-colors cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-[#0c3148]/80 border border-sky-400/45 text-white'
+                                    : 'border border-transparent text-slate-300 hover:bg-sky-500/10 hover:text-white'
+                                }`}
+                              >
+                                <span className="flex items-center gap-2 truncate">
+                                  <span
+                                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                      dev.status === 'RUNNING'
+                                        ? 'bg-emerald-400'
+                                        : 'bg-slate-500'
+                                    }`}
+                                  />
+                                  <span className="truncate">{dev.name}</span>
+                                </span>
+                                <span className="font-mono-tabular text-[11px] text-slate-400 ml-2 shrink-0">
+                                  {Math.round(dev.loadPct)}%
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </section>
 
@@ -790,28 +1308,67 @@ export function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto hud-scroll divide-y divide-sky-500/10">
-              {alarms.map((alm) => (
-                <div key={alm.id} className="px-2.5 py-1.5 flex items-start gap-2">
-                  <span className="font-mono-tabular text-[10px] text-slate-500 shrink-0 pt-[1px]">
-                    {alm.timestamp}
-                  </span>
-                  <div className="min-w-0 leading-snug">
-                    <div className="text-[11px] text-slate-200 truncate">
-                      <span
-                        className={`font-mono-tabular font-semibold mr-1 ${
-                          alm.severity === 'WARN'
-                            ? 'text-amber-400'
-                            : 'text-slate-300'
-                        }`}
-                      >
-                        [{alm.severity}]
-                      </span>
-                      {alm.message}
-                    </div>
-                    <div className="text-[10px] text-slate-500">{alm.source}</div>
-                  </div>
+              {alarms.length === 0 ? (
+                <div className="px-2.5 py-4 text-center text-[11px] text-slate-500">
+                  {dataMode === 'live' && snapshotLoading
+                    ? 'Loading alarms...'
+                    : 'No active or recent alarms'}
                 </div>
-              ))}
+              ) : (
+                alarms.map((alm) => (
+                  <div key={alm.id} className="px-2.5 py-1.5 flex items-start gap-2">
+                    <span className="font-mono-tabular text-[10px] text-slate-500 shrink-0 pt-[1px]">
+                      {alm.timestamp}
+                    </span>
+                    <div className="min-w-0 flex-1 leading-snug">
+                      <div className="text-[11px] text-slate-200 truncate">
+                        <span
+                          className={`font-mono-tabular font-semibold mr-1 ${
+                            alm.severity === 'CRIT'
+                              ? 'text-rose-400'
+                              : alm.severity === 'WARN'
+                                ? 'text-amber-400'
+                                : 'text-slate-300'
+                          }`}
+                        >
+                          [{alm.severity}]
+                        </span>
+                        {alm.message}
+                      </div>
+                      <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500 mt-0.5">
+                        <span className="truncate">
+                          {alm.source}
+                          {alm.sourceType ? ` · ${alm.sourceType}` : ''}
+                          {alm.occurrenceCount && alm.occurrenceCount > 1
+                            ? ` ×${alm.occurrenceCount}`
+                            : ''}
+                          {alm.state && alm.state !== 'ACTIVE' ? ` · ${alm.state}` : ''}
+                        </span>
+                        {canOperateAlarms && alm.state !== 'CLEARED' && (
+                          <span className="flex items-center gap-1 shrink-0">
+                            {alm.state !== 'ACKNOWLEDGED' && (
+                              <button
+                                type="button"
+                                onClick={() => void handleAlarmAction(alm, 'acknowledge')}
+                                className="px-1 border border-sky-500/30 hover:border-sky-400/70 text-sky-300 rounded-[2px] text-[9px] cursor-pointer"
+                              >
+                                Ack
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => void handleAlarmAction(alm, 'clear')}
+                              className="px-1 border border-slate-600/60 hover:border-slate-400 text-slate-300 rounded-[2px] text-[9px] cursor-pointer"
+                            >
+                              Clr
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </section>
         </aside>
@@ -834,7 +1391,7 @@ export function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto hud-scroll px-3 py-2">
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <span
                   className={`px-1.5 py-[1px] text-[9.5px] font-semibold tracking-wider uppercase border rounded-[2px] ${
                     selectedDevice.status === 'RUNNING'
@@ -847,6 +1404,11 @@ export function App() {
                 <span className="px-1.5 py-[1px] text-[9.5px] font-mono-tabular text-slate-300 border border-slate-600/70 bg-slate-800/40 rounded-[2px]">
                   {selectedDevice.code}
                 </span>
+                {dataMode === 'live' && selectedDevice.quality && (
+                  <span className="px-1.5 py-[1px] text-[9px] font-mono-tabular text-sky-300 border border-sky-500/35 bg-sky-500/10 rounded-[2px]">
+                    {selectedDevice.quality}
+                  </span>
+                )}
               </div>
 
               <h3 className="text-[15px] font-semibold text-white mt-1.5 leading-tight">
@@ -857,7 +1419,7 @@ export function App() {
               </div>
 
               <div className="text-[10.5px] font-medium text-slate-400 border-b border-sky-500/15 pb-1 mb-1.5">
-                Live Parameters
+                {dataMode === 'live' ? 'Measured Parameters' : 'Live Parameters'}
               </div>
 
               <div className="space-y-[3px]">
@@ -926,6 +1488,12 @@ export function App() {
                 currentCop={latestTrend.cop.toFixed(2)}
                 currentChwOut={latestTrend.chwOut.toFixed(1)}
                 currentCwIn={latestTrend.cwIn.toFixed(1)}
+                loading={dataMode === 'live' && (snapshotLoading || trendsLoading)}
+                emptyMessage={
+                  dataMode === 'live' && !currentUser
+                    ? 'Sign in to inspect live backend trends.'
+                    : 'No telemetry samples recorded for this device yet.'
+                }
               />
             </div>
           </section>
@@ -1014,7 +1582,7 @@ export function App() {
               CHW SUPPLY
             </span>
             <span className="font-mono-tabular font-semibold text-[#38bdf8]">
-              {kpis.chwSupplyC.toFixed(1)}°C
+              {isLiveBlocked ? '—' : `${kpis.chwSupplyC.toFixed(1)}°C`}
             </span>
           </div>
 
@@ -1023,14 +1591,14 @@ export function App() {
               CHW RETURN
             </span>
             <span className="font-mono-tabular font-semibold text-[#fb923c]">
-              {kpis.chwReturnC.toFixed(1)}°C
+              {isLiveBlocked ? '—' : `${kpis.chwReturnC.toFixed(1)}°C`}
             </span>
           </div>
 
           <div className="flex items-center gap-1.5 whitespace-nowrap">
             <span className="text-slate-500 tracking-wider uppercase">ΔT</span>
             <span className="font-mono-tabular font-semibold text-[#38bdf8]">
-              {kpis.deltaTK.toFixed(1)}K
+              {isLiveBlocked ? '—' : `${kpis.deltaTK.toFixed(1)}K`}
             </span>
           </div>
 
@@ -1039,7 +1607,7 @@ export function App() {
               CW SUPPLY
             </span>
             <span className="font-mono-tabular font-semibold text-[#fb923c]">
-              {kpis.cwSupplyC.toFixed(1)}°C
+              {isLiveBlocked ? '—' : `${kpis.cwSupplyC.toFixed(1)}°C`}
             </span>
           </div>
 
@@ -1048,7 +1616,7 @@ export function App() {
               TOWER APPROACH
             </span>
             <span className="font-mono-tabular font-semibold text-[#38bdf8]">
-              {kpis.towerApproachK.toFixed(2)}K
+              {isLiveBlocked ? '—' : `${kpis.towerApproachK.toFixed(2)}K`}
             </span>
           </div>
 
@@ -1057,22 +1625,32 @@ export function App() {
               CHILLERS ON
             </span>
             <span className="font-mono-tabular font-semibold text-[#38bdf8]">
-              {kpis.chillersOn}
+              {isLiveBlocked ? '—' : kpis.chillersOn}
             </span>
           </div>
 
-          {/* Interactive Scenario Selector */}
+          {/* Scenario Selector (interactive in Demo mode, read-only plant regime in Live mode) */}
           <div className="relative">
             <button
               type="button"
-              onClick={() => setScenarioOpen((o) => !o)}
-              className="flex items-center gap-1.5 px-2 py-[1px] bg-[#0a1626] border border-sky-500/25 rounded-[2px] text-[10.5px] text-slate-300 hover:border-sky-400/50 transition-colors cursor-pointer whitespace-nowrap"
+              disabled={dataMode === 'live'}
+              onClick={() => dataMode === 'simulated' && setScenarioOpen((o) => !o)}
+              className={`flex items-center gap-1.5 px-2 py-[1px] bg-[#0a1626] border border-sky-500/25 rounded-[2px] text-[10.5px] text-slate-300 transition-colors whitespace-nowrap ${
+                dataMode === 'simulated'
+                  ? 'hover:border-sky-400/50 cursor-pointer'
+                  : 'opacity-75 cursor-default'
+              }`}
+              title={
+                dataMode === 'live'
+                  ? 'Reported by live edge gateway'
+                  : 'Switch simulated demo scenario'
+              }
             >
               <span className="text-slate-400">Scenario:</span>
               <span className="font-medium text-white">{scenario}</span>
             </button>
 
-            {scenarioOpen && (
+            {scenarioOpen && dataMode === 'simulated' && (
               <div className="absolute bottom-full left-0 mb-1 w-40 bg-[#081322] border border-sky-500/35 rounded-[3px] shadow-xl py-1 z-50">
                 {SCENARIOS.map((sc) => (
                   <button
@@ -1093,10 +1671,45 @@ export function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 shrink-0">
-          <span className="px-1.5 py-[1px] border border-sky-500/30 bg-[#081526] text-[9.5px] font-mono-tabular tracking-wider uppercase text-sky-300/80 rounded-[2px]">
-            SIMULATED · NOT MEASURED
+        <div className="flex items-center gap-2.5 shrink-0">
+          {/* Explicit Mode Switcher: LIVE vs SIM */}
+          <div className="flex items-center border border-sky-500/25 bg-[#081220] rounded-[2px] overflow-hidden">
+            <button
+              type="button"
+              onClick={() => handleModeChange('live')}
+              className={`px-1.5 py-[1px] text-[9.5px] font-mono-tabular uppercase tracking-wider transition-colors cursor-pointer ${
+                dataMode === 'live'
+                  ? 'bg-[#0e4466] text-white font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              LIVE
+            </button>
+            <button
+              type="button"
+              onClick={() => handleModeChange('simulated')}
+              className={`px-1.5 py-[1px] text-[9.5px] font-mono-tabular uppercase tracking-wider transition-colors cursor-pointer ${
+                dataMode === 'simulated'
+                  ? 'bg-[#0e4466] text-white font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              SIM
+            </button>
+          </div>
+
+          {/* Dynamic Telemetry Freshness & Connection Status Indicator */}
+          <span
+            className={`px-1.5 py-[1px] border text-[9.5px] font-mono-tabular tracking-wider uppercase rounded-[2px] ${statusBadgeClass}`}
+            title={
+              dataMode === 'live'
+                ? `Last observed sensor reading: ${observedAt ?? 'none'}`
+                : 'Local thermodynamic simulation active'
+            }
+          >
+            {freshnessStatus} · {observedAgeLabel}
           </span>
+
           <span className="font-mono-tabular text-[10.5px] text-slate-500 w-10 text-right">
             {fps} fps
           </span>

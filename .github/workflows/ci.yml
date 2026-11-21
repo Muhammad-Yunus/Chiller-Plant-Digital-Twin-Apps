@@ -1,0 +1,37 @@
+name: CI — Lint, Test, Build & Migration Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: TypeScript type-check
+        run: npm run lint
+
+      - name: Unit & API integration tests
+        run: npm test
+
+      - name: Production frontend build
+        run: npm run build
+
+      - name: Verify Drizzle migration snapshots exist
+        run: |
+          test -d drizzle/meta
+          ls -1 drizzle/*.sql
