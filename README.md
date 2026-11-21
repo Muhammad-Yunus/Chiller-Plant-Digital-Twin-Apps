@@ -2,14 +2,14 @@
 
 # Chiller Plant Twin
 
-**Production-Hardened 3D Central HVAC Digital Twin, Real-Time SSE Telemetry & Cloud SQL Persistence Console**
+**Production-Hardened 3D Central HVAC Digital Twin, Real-Time SSE Telemetry & PostgreSQL Persistence Console**
 
 [![React](https://img.shields.io/badge/React-19.0-61DAFB?style=for-the-badge&logo=react&logoColor=0A0F1A)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Three.js](https://img.shields.io/badge/Three.js-0.187-000000?style=for-the-badge&logo=threedotjs&logoColor=white)](https://threejs.org/)
 [![Express](https://img.shields.io/badge/Express-4.21-1E293B?style=for-the-badge&logo=express&logoColor=white)](https://expressjs.com/)
 [![Drizzle ORM](https://img.shields.io/badge/Drizzle_ORM-0.45-C5F74F?style=for-the-badge&logo=drizzle&logoColor=0A0F1A)](https://orm.drizzle.team/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Cloud_SQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Supabase_%7C_Cloud_SQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Firebase](https://img.shields.io/badge/Firebase_Auth-13.4-DD2C00?style=for-the-badge&logo=firebase&logoColor=white)](https://firebase.google.com/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4.3-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Vite](https://img.shields.io/badge/Vite-8.3-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
@@ -24,7 +24,7 @@
 
 ## Overview
 
-**Chiller Plant Twin** is a full-stack industrial digital twin application for monitoring, inspecting, and persisting central chilled-water plant telemetry. It pairs a procedural **Three.js** WebGL mechanical viewport and dark-room CAD HUD with a hardened **Express + Drizzle ORM + Cloud SQL (PostgreSQL)** backend featuring separated **Edge Gateway Ingestion Auth** and **Firebase Operator RBAC**, transactional idempotent batch persistence, and real-time **Server-Sent Events (SSE)** updates.
+**Chiller Plant Twin** is a full-stack industrial digital twin application for monitoring, inspecting, and persisting central chilled-water plant telemetry. It pairs a procedural **Three.js** WebGL mechanical viewport and dark-room CAD HUD with a hardened **Express + Drizzle ORM + PostgreSQL (Supabase / Cloud SQL)** backend featuring separated **Edge Gateway Ingestion Auth** and **Firebase Operator RBAC**, transactional idempotent batch persistence, and real-time **Server-Sent Events (SSE)** updates.
 
 ### Operational Modes: Live vs Simulated
 
@@ -32,7 +32,7 @@ The dashboard explicitly separates production telemetry from demo simulation:
 
 | Mode | Data Source | Footer Status Pill | Purpose |
 | :--- | :--- | :--- | :--- |
-| **LIVE** | Cloud SQL snapshot + authenticated SSE stream (`/api/v1/plants/:plantCode/stream`) | `LIVE · <age>` / `STALE · <age>` / `OFFLINE` | Real sensor telemetry with `observedAt` freshness tracking, device-specific trends, and operator alarm ack/clear |
+| **LIVE** | PostgreSQL snapshot + authenticated SSE stream (`/api/v1/plants/:plantCode/stream`) | `LIVE · <age>` / `STALE · <age>` / `OFFLINE` | Real sensor telemetry with `observedAt` freshness tracking, device-specific trends, and operator alarm ack/clear |
 | **SIM** | Client thermodynamic demo engine (`SCENARIO_TARGETS`) | `SIMULATED · DEMO TICK` | Offline/anonymous visualization and what-if scenario exploration (`Steady State`, `Peak Cooling`, `Part Load`, `High Wet Bulb`) |
 
 ---
@@ -44,7 +44,7 @@ flowchart LR
     Sensors["Plant PLC / BMS Sensors (19 Units)"]
     Edge["Edge Gateway Collector"]
     API["Express API (:3000)\nZod Validation · Rate Limit · RBAC"]
-    DB[("Cloud SQL PostgreSQL\nMulti-Plant Schema & Migrations")]
+    DB[("PostgreSQL (Supabase / Cloud SQL)\nMulti-Plant Schema & Migrations")]
     Bus["PlantRealtimeBus (SSE)"]
     HUD["React 19 + Three.js HUD\nLIVE / STALE / OFFLINE / SIM"]
 
@@ -100,37 +100,41 @@ GET /api/docs/openapi.json
 
 ## Environment Variables
 
-Store production secrets in **Google Secret Manager / Cloud Run Secrets**—never commit `.env` files or credentials.
+Copy [`.env.example`](.env.example) to `.env` for local development (`.env` is gitignored via `.gitignore` and excluded from container builds via `.dockerignore`). Store production secrets in **Google Secret Manager / Cloud Run Secrets**—never commit `.env` files or credentials.
 
 | Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `PORT` | No | `3000` | HTTP listen port |
 | `NODE_ENV` | Yes (prod) | `development` | Enables static `dist/` serving & HSTS header in `production` |
-| `APP_URL` | Yes | — | Public HTTPS origin allowed by CORS |
+| `APP_URL` | Yes | `http://localhost:3000` | Public HTTPS origin allowed by CORS |
 | `ALLOWED_ORIGINS` | No | `""` | Comma-separated additional allowed CORS origins |
-| `SQL_HOST` | Yes | — | Cloud SQL Unix socket (`/cloudsql/PROJECT:REGION:INSTANCE`) or IP/host |
+| `SQL_HOST` | Yes | — | Supabase Pooler host (`*.pooler.supabase.com`), PostgreSQL host, or Cloud SQL Unix socket (`/cloudsql/...`) |
 | `SQL_PORT` | No | `5432` | PostgreSQL TCP port (omit for Unix sockets) |
-| `SQL_DB_NAME` | Yes | `chiller_plant_twin` | Target PostgreSQL database name |
-| `SQL_USER` | Yes | — | Least-privilege runtime DB user (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) |
+| `SQL_DB_NAME` | Yes | `postgres` | Target PostgreSQL database name |
+| `SQL_USER` | Yes | — | Runtime DB user (e.g., `postgres.<project_ref>` for Supabase or least-privilege `app_user`) |
 | `SQL_PASSWORD` | Yes | — | Runtime DB user password |
-| `SQL_SSL` | No | `false` | Enable TLS (`true` when connecting over public/VPC TCP without Cloud SQL socket) |
-| `SQL_SSL_REJECT_UNAUTHORIZED` | No | `true` | Verify server TLS certificate |
+| `SQL_SSL` | No | `true` | Enable TLS (`true` for Supabase / TCP; `false` for local/Cloud SQL Unix sockets) |
+| `SQL_SSL_REJECT_UNAUTHORIZED` | No | `false` | Set `true` when verifying against a trusted root CA, `false` for managed pooler chains |
 | `SQL_POOL_MAX` | No | `10` | Maximum `pg.Pool` connections per server instance |
 | `SQL_ADMIN_USER` | Migration only | — | Privileged DB user used strictly by `db:migrate` / `drizzle-kit` |
 | `SQL_ADMIN_PASSWORD` | Migration only | — | Admin DB password used strictly for migrations |
-| `BOOTSTRAP_ADMIN_EMAIL` | No | `""` | Email auto-assigned `ADMIN` role on first sign-in |
+| `BOOTSTRAP_ADMIN_EMAIL` | No | `""` | Email auto-assigned `ADMIN` role on first sign-in (required for auto-bootstrap in production) |
 | `TELEMETRY_STALE_AFTER_SEC` | No | `15` | Age threshold (seconds) after which live UI marks telemetry `STALE` |
 | `API_RATE_LIMIT_PER_MIN` | No | `180` | Per-IP rate limit on operator API endpoints |
 | `INGEST_RATE_LIMIT_PER_MIN` | No | `240` | Per-credential rate limit on `/api/v1/telemetry/ingest` |
 | `METRICS_TOKEN` | No | `""` | Optional static secret for `X-Metrics-Token` scraping |
+| `GEMINI_API_KEY` | No | `""` | Optional server-side Gemini API key (if AI endpoints are added later) |
 
 ---
 
 ## Local Setup, Migrations & Edge Ingestion
 
-### 1. Install Dependencies & Apply Reproducible Migrations
+### 1. Configure `.env`, Install Dependencies & Apply Migrations
 
 ```bash
+cp .env.example .env
+# Edit .env with your Supabase or PostgreSQL credentials
+
 npm install
 npm run db:migrate
 npm run db:seed
@@ -194,8 +198,9 @@ curl -X POST http://localhost:3000/api/v1/telemetry/ingest \
 # Development server (Express + Vite HMR on :3000)
 npm run dev
 
-# Static type-check + Vitest unit/integration suite
+# Static type-check, Drizzle schema check & Vitest unit/API/PostgreSQL suite
 npm run lint
+npx drizzle-kit check --config=src/db/drizzle.config.ts
 npm test
 
 # Production build & start
@@ -212,8 +217,12 @@ npm run plant:assign-role -- --plant CENTRAL_PLANT_01 --email operator@example.c
 
 ```text
 .
+├── .dockerignore                     # Excludes .env, tests, node_modules & build artifacts from images
+├── .env.example                      # Sanitized environment variable template (no secrets)
+├── .gitignore                        # Ignores .env*, build outputs, keys & service-account files
 ├── .github/workflows/ci.yml          # CI: lint, drizzle-kit check, Postgres migrate, vitest, build
-├── Dockerfile                        # Non-root Node 22 multi-stage Cloud Run image
+├── Dockerfile                        # Non-root Node 22 multi-stage container image
+├── vitest.config.ts                  # Vitest Node test runner configuration
 ├── deploy/
 │   └── cloudrun.service.yaml         # Declarative Cloud Run service manifest (maxScale=1, probes, Secret refs)
 ├── docs/
@@ -221,11 +230,16 @@ npm run plant:assign-role -- --plant CENTRAL_PLANT_01 --email operator@example.c
 │   └── openapi.json                  # OpenAPI 3.1 API specification
 ├── drizzle/                          # Committed Drizzle SQL migration history
 ├── server.ts                         # Production/dev server entrypoint + graceful shutdown
+├── tests/
+│   ├── validation.test.ts            # Strict Zod ingest, credential & RBAC schema unit tests
+│   ├── edgeCryptoAndFreshness.test.ts # Edge scrypt hashing, out-of-order guard & log redaction tests
+│   ├── api.integration.test.ts       # Express API, auth separation, RBAC & idempotency integration tests
+│   └── db.integration.test.ts        # Live PostgreSQL/Supabase transaction, isolation & rotation tests
 └── src/
     ├── App.tsx                       # Live vs Simulated HUD, SSE client, freshness & alarm lifecycle UI
     ├── components/TrendsChart.tsx    # Pure SVG 1 Hz multi-series trend chart + loading/empty states
     ├── db/
-    │   ├── index.ts                  # pg.Pool connection & closePool()
+    │   ├── index.ts                  # pg.Pool connection (dotenv override) & closePool()
     │   ├── schema.ts                 # Multi-plant Drizzle PostgreSQL schema
     │   ├── plantRepository.ts        # Transactional ingest, out-of-order guard, RBAC & trend queries
     │   ├── migrate.ts                # Admin migration runner
